@@ -1,0 +1,126 @@
++            shop.itemNames.distinct().count { itemName ->
++                godShopSelectionKey(shop.type, itemName) in selectedItems &&
++                    (shop.itemStocks[itemName] ?: 0) > 0
++            }
++        }
++    }
++
++    LaunchedEffect(enabled, selectedItems) {
++        onHoarderChanged(enabled && selectedItems.isNotEmpty(), selectedItems)
++    }
++
++    AppCard(
++        title = "GOD — Hoarder",
++        persistKey = "god_hoarder",
++        collapsible = true,
++    ) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .background(Accent.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
++                .padding(12.dp),
++            verticalAlignment = Alignment.CenterVertically,
++            horizontalArrangement = Arrangement.spacedBy(10.dp),
++        ) {
++            Icon(
++                imageVector = Icons.Outlined.ShoppingCart,
++                contentDescription = null,
++                tint = Accent,
++                modifier = Modifier.size(22.dp),
++            )
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    "Buy selected shop items on every restock",
++                    fontSize = 13.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    color = TextPrimary,
++                )
++                Text(
++                    "${selectedItems.size} selected • $selectedInStock currently in stock • ${shopOptions.size} shops",
++                    fontSize = 10.sp,
++                    color = TextSecondary,
++                )
++            }
++            Switch(
++                checked = enabled,
++                enabled = selectedItems.isNotEmpty(),
++                onCheckedChange = { enabled = it },
++            )
++        }
++
++        Spacer(modifier = Modifier.height(10.dp))
++        Text(
++            "Select any items from any shop. While enabled, Hoarder buys the full available stock of each selected shop item whenever it appears or restocks.",
++            fontSize = 10.sp,
++            color = TextMuted,
++        )
++
++        Spacer(modifier = Modifier.height(8.dp))
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.spacedBy(8.dp),
++        ) {
++            OutlinedButton(
++                modifier = Modifier.weight(1f),
++                enabled = allKeys.isNotEmpty(),
++                onClick = { selectedItems = allKeys },
++            ) { Text("Select all", fontSize = 10.sp) }
++            OutlinedButton(
++                modifier = Modifier.weight(1f),
++                enabled = selectedItems.isNotEmpty(),
++                onClick = {
++                    selectedItems = emptySet()
++                    enabled = false
++                },
++            ) { Text("Clear", fontSize = 10.sp) }
++        }
++
++        Spacer(modifier = Modifier.height(8.dp))
++        if (shopOptions.isEmpty()) {
++            Text("No shop data available yet.", fontSize = 10.sp, color = TextMuted)
++        } else {
++            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
++                shopOptions.forEach { shop ->
++                    val title = shop.type.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
++                    Text(title, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
++                    FlowRow(
++                        horizontalArrangement = Arrangement.spacedBy(6.dp),
++                        verticalArrangement = Arrangement.spacedBy(4.dp),
++                    ) {
++                        shop.itemNames.distinct().forEach { itemName ->
++                            val key = godShopSelectionKey(shop.type, itemName)
++                            val displayName = MgApi.findItem(itemName)?.name ?: itemName
++                            val stock = shop.itemStocks[itemName] ?: 0
++                            FilterChip(
++                                selected = key in selectedItems,
++                                onClick = {
++                                    selectedItems = if (key in selectedItems) {
++                                        selectedItems - key
++                                    } else {
++                                        selectedItems + key
++                                    }
++                                    if (selectedItems.isEmpty()) enabled = false
++                                },
++                                label = {
++                                    Text(
++                                        if (stock > 0) "$displayName ($stock)" else displayName,
++                                        fontSize = 10.sp,
++                                    )
++                                },
++                            )
++                        }
++                    }
++                }
++            }
++        }
++
++        if (enabled) {
++            Spacer(modifier = Modifier.height(10.dp))
++            Text(
++                "HOARDER RUNNING",
++                fontSize = 10.sp,
++                fontWeight = FontWeight.Bold,
++                color = StatusConnected,
+             )
+         }
+     }
