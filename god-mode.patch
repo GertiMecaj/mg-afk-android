@@ -1,0 +1,439 @@
+diff -ruN mg_afk_clean/mg-afk-android-2.4.18/GOD_MODE_CHANGES.md mg_afk_work/mg-afk-android-2.4.18/GOD_MODE_CHANGES.md
+--- mg_afk_clean/mg-afk-android-2.4.18/GOD_MODE_CHANGES.md	1970-01-01 00:00:00.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/GOD_MODE_CHANGES.md	2026-09-07 15:48:04.545669967 +0000
+@@ -0,0 +1,21 @@
++# GOD Mode addition
++
++This modified source adds a new connected navigation section named **GOD**.
++
++## Mass Harvest
++
++- Reads the current live `Session.garden` snapshot.
++- Groups planted crops by species so one selection can target every planted crop of that type.
++- Shows how many crops of each species are mature and harvestable.
++- Immature crops remain visible but cannot be selected until their `endTime` has passed.
++- Provides **Select all ready** and **Clear** controls.
++- **COLLECT X SELECTED** sends `HarvestCrop` for every selected mature `(tileId, slotIndex)` pair.
++- The ViewModel re-validates every target against the latest garden state before sending.
++- Batch commands are sent sequentially with a 50 ms spacing and deduplicated targets.
++- Selection clears immediately after submission to prevent accidental duplicate batches while server patches are arriving.
++
++## Files changed
++
++- `app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt`
++- `app/src/main/java/com/mgafk/app/ui/MainViewModel.kt`
++- Added `app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt`
+diff -ruN mg_afk_clean/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt
+--- mg_afk_clean/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-02 10:11:56.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 15:47:25.447175274 +0000
+@@ -1387,6 +1387,35 @@
+         clients[sessionId]?.actions?.harvestCrop(slot = slot, slotsIndex = slotIndex)
+     }
+ 
++    /**
++     * GOD mode batch harvest. The UI submits the selected tile/slot pairs in one tap;
++     * this method validates them against the latest garden snapshot and sends the
++     * HarvestCrop commands in a short sequence so the socket is not flooded at once.
++     */
++    fun harvestCrops(sessionId: String, targets: List<Pair<Int, Int>>) {
++        val actions = clients[sessionId]?.actions ?: return
++        val session = _state.value.sessions.find { it.id == sessionId } ?: return
++        val now = System.currentTimeMillis()
++
++        val livePlants = session.garden.associateBy { it.tileId to it.slotIndex }
++        val validTargets = targets
++            .distinct()
++            .filter { key ->
++                val plant = livePlants[key] ?: return@filter false
++                plant.endTime > 0L && now >= plant.endTime
++            }
++
++        if (validTargets.isEmpty()) return
++
++        viewModelScope.launch {
++            validTargets.forEachIndexed { index, (tileId, slotIndex) ->
++                actions.harvestCrop(slot = tileId, slotsIndex = slotIndex)
++                // Keep commands ordered while avoiding a single large WebSocket burst.
++                if (index < validTargets.lastIndex) delay(50)
++            }
++        }
++    }
++
+     private val pendingCleanseJobs = mutableMapOf<String, Job>()
+ 
+     /** Cleanse one mutation from a crop slot. Requires a CropCleanser tool. */
+diff -ruN mg_afk_clean/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt
+--- mg_afk_clean/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-02 10:11:56.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-07 15:46:22.424193029 +0000
+@@ -33,6 +33,7 @@
+ import androidx.compose.material.icons.outlined.DeleteOutline
+ import androidx.compose.material.icons.outlined.Notifications
+ import androidx.compose.material.icons.outlined.Grass
++import androidx.compose.material.icons.outlined.Bolt
+ import androidx.compose.material.icons.outlined.Inventory2
+ import androidx.compose.material.icons.outlined.MeetingRoom
+ import androidx.compose.material.icons.outlined.Pets
+@@ -91,6 +92,7 @@
+ import com.mgafk.app.ui.screens.logs.AbilityLogsCard
+ import com.mgafk.app.ui.screens.garden.EggsCard
+ import com.mgafk.app.ui.screens.garden.GardenCard
++import com.mgafk.app.ui.screens.god.GodCard
+ import com.mgafk.app.ui.screens.storage.DecorShedCard
+ import com.mgafk.app.ui.screens.storage.FeedingTroughCard
+ import com.mgafk.app.ui.screens.storage.InventoryCard
+@@ -131,6 +133,7 @@
+     PETS("Pets", Icons.Outlined.Pets, requiresConnection = true),
+     STORAGE("Storage", Icons.Outlined.Inventory2, requiresConnection = true),
+     GARDEN("Garden", Icons.Outlined.Grass, requiresConnection = true),
++    GOD("GOD", Icons.Outlined.Bolt, requiresConnection = true),
+     SHOPS("Shops", Icons.Outlined.ShoppingCart, requiresConnection = true),
+     SOCIAL("Social", Icons.Outlined.People),
+     ALERTS("Alerts", Icons.Outlined.Notifications),
+@@ -627,6 +630,15 @@
+                 onDismissHatchedPet = { viewModel.clearHatchedPet(session.id) },
+             )
+         }
++        NavSection.GOD -> {
++            GodCard(
++                plants = session.garden,
++                apiReady = state.apiReady,
++                onCollect = { targets ->
++                    viewModel.harvestCrops(session.id, targets)
++                },
++            )
++        }
+         NavSection.PETS -> {
+             ActivePetsCard(
+                 pets = session.pets,
+diff -ruN mg_afk_clean/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+--- mg_afk_clean/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	1970-01-01 00:00:00.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 15:47:25.446327937 +0000
+@@ -0,0 +1,328 @@
++package com.mgafk.app.ui.screens.god
++
++import androidx.compose.foundation.background
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.outlined.Bolt
++import androidx.compose.material3.Button
++import androidx.compose.material3.Checkbox
++import androidx.compose.material3.Icon
++import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableLongStateOf
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.saveable.listSaver
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import com.mgafk.app.data.model.GardenPlantSnapshot
++import com.mgafk.app.data.repository.MgApi
++import com.mgafk.app.ui.components.AppCard
++import com.mgafk.app.ui.components.SpriteImage
++import com.mgafk.app.ui.theme.Accent
++import com.mgafk.app.ui.theme.StatusConnected
++import com.mgafk.app.ui.theme.SurfaceDark
++import com.mgafk.app.ui.theme.TextMuted
++import com.mgafk.app.ui.theme.TextPrimary
++import com.mgafk.app.ui.theme.TextSecondary
++import kotlinx.coroutines.delay
++
++private data class PlantGroup(
++    val species: String,
++    val displayName: String,
++    val plants: List<GardenPlantSnapshot>,
++)
++
++/** Recompose once per second so crops become selectable as soon as they mature. */
++@Composable
++private fun rememberGodClock(): Long {
++    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
++    LaunchedEffect(Unit) {
++        while (true) {
++            delay(1000)
++            now = System.currentTimeMillis()
++        }
++    }
++    return now
++}
++
++private fun GardenPlantSnapshot.isReady(now: Long): Boolean =
++    endTime > 0L && now >= endTime
++
++private fun formatRemaining(endTime: Long, now: Long): String {
++    val remaining = (endTime - now).coerceAtLeast(0L) / 1000L
++    if (remaining <= 0L) return "Ready"
++    val hours = remaining / 3600L
++    val minutes = (remaining % 3600L) / 60L
++    val seconds = remaining % 60L
++    return when {
++        hours > 0L -> "${hours}h ${minutes}m"
++        minutes > 0L -> "${minutes}m ${seconds}s"
++        else -> "${seconds}s"
++    }
++}
++
++/**
++ * GOD mode: choose planted crop species, then harvest every mature crop belonging
++ * to the selected species with one button press.
++ *
++ * Selection is intentionally species-based rather than tile-based: selecting Carrot,
++ * for example, targets every mature planted Carrot across the garden, including
++ * individual grow slots on multi-slot plants.
++ */
++@Composable
++fun GodCard(
++    plants: List<GardenPlantSnapshot>,
++    apiReady: Boolean = false,
++    onCollect: (List<Pair<Int, Int>>) -> Unit = {},
++) {
++    val now = rememberGodClock()
++
++    var selectedSpecies by rememberSaveable(
++        stateSaver = listSaver<Set<String>, String>(
++            save = { it.toList() },
++            restore = { it.toSet() },
++        ),
++    ) { mutableStateOf(emptySet()) }
++
++    val groups = remember(plants, apiReady) {
++        plants
++            .filter { it.species.isNotBlank() }
++            .groupBy { it.species }
++            .map { (species, groupedPlants) ->
++                val displayName = MgApi.findItem(species)?.name
++                    ?.removeSuffix(" Seed")
++                    ?.takeIf { it.isNotBlank() }
++                    ?: species
++                PlantGroup(
++                    species = species,
++                    displayName = displayName,
++                    plants = groupedPlants.sortedWith(compareBy({ it.tileId }, { it.slotIndex })),
++                )
++            }
++            .sortedBy { it.displayName.lowercase() }
++    }
++
++    // Remove selections for crops that are no longer planted.
++    val availableSpecies = remember(groups) { groups.map { it.species }.toSet() }
++    LaunchedEffect(availableSpecies) {
++        selectedSpecies = selectedSpecies.intersect(availableSpecies)
++    }
++
++    val readySpecies = remember(groups, now) {
++        groups.filter { group -> group.plants.any { it.isReady(now) } }
++            .map { it.species }
++            .toSet()
++    }
++
++    val selectedTargets = remember(plants, selectedSpecies, now) {
++        plants
++            .asSequence()
++            .filter { it.species in selectedSpecies && it.isReady(now) }
++            .map { it.tileId to it.slotIndex }
++            .distinct()
++            .toList()
++    }
++
++    val totalReady = remember(plants, now) { plants.count { it.isReady(now) } }
++
++    AppCard(
++        title = "GOD — Mass Harvest",
++        persistKey = "god_mass_harvest",
++        collapsible = true,
++    ) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .background(Accent.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
++                .padding(12.dp),
++            verticalAlignment = Alignment.CenterVertically,
++            horizontalArrangement = Arrangement.spacedBy(10.dp),
++        ) {
++            Icon(
++                imageVector = Icons.Outlined.Bolt,
++                contentDescription = null,
++                tint = Accent,
++                modifier = Modifier.size(22.dp),
++            )
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    text = "Select crops, then collect them all at once.",
++                    color = TextPrimary,
++                    fontSize = 13.sp,
++                    fontWeight = FontWeight.SemiBold,
++                )
++                Text(
++                    text = "$totalReady ready • ${plants.size} planted",
++                    color = TextSecondary,
++                    fontSize = 11.sp,
++                )
++            }
++        }
++
++        Spacer(modifier = Modifier.height(12.dp))
++
++        if (plants.isEmpty()) {
++            Text(
++                text = "Nothing is currently planted in this garden.",
++                color = TextMuted,
++                fontSize = 12.sp,
++            )
++            return@AppCard
++        }
++
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.spacedBy(8.dp),
++        ) {
++            OutlinedButton(
++                modifier = Modifier.weight(1f),
++                enabled = readySpecies.isNotEmpty(),
++                onClick = { selectedSpecies = readySpecies },
++            ) {
++                Text("Select all ready", fontSize = 11.sp)
++            }
++            OutlinedButton(
++                modifier = Modifier.weight(1f),
++                enabled = selectedSpecies.isNotEmpty(),
++                onClick = { selectedSpecies = emptySet() },
++            ) {
++                Text("Clear", fontSize = 11.sp)
++            }
++        }
++
++        Spacer(modifier = Modifier.height(10.dp))
++
++        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
++            groups.forEach { group ->
++                val readyCount = group.plants.count { it.isReady(now) }
++                val isSelected = group.species in selectedSpecies
++                val enabled = readyCount > 0
++                val firstNotReady = group.plants
++                    .filterNot { it.isReady(now) }
++                    .minByOrNull { it.endTime }
++
++                Row(
++                    modifier = Modifier
++                        .fillMaxWidth()
++                        .background(
++                            if (isSelected) Accent.copy(alpha = 0.10f) else SurfaceDark,
++                            RoundedCornerShape(10.dp),
++                        )
++                        .then(
++                            if (enabled) {
++                                Modifier.clickable {
++                                    selectedSpecies = if (isSelected) {
++                                        selectedSpecies - group.species
++                                    } else {
++                                        selectedSpecies + group.species
++                                    }
++                                }
++                            } else Modifier
++                        )
++                        .padding(horizontal = 10.dp, vertical = 8.dp),
++                    verticalAlignment = Alignment.CenterVertically,
++                ) {
++                    Checkbox(
++                        checked = isSelected,
++                        enabled = enabled,
++                        onCheckedChange = { checked ->
++                            selectedSpecies = if (checked) {
++                                selectedSpecies + group.species
++                            } else {
++                                selectedSpecies - group.species
++                            }
++                        },
++                    )
++
++                    SpriteImage(
++                        category = "plants",
++                        name = group.species,
++                        size = 36.dp,
++                        contentDescription = group.displayName,
++                    )
++
++                    Column(
++                        modifier = Modifier
++                            .weight(1f)
++                            .padding(start = 10.dp),
++                    ) {
++                        Text(
++                            text = group.displayName,
++                            color = if (enabled) TextPrimary else TextMuted,
++                            fontSize = 13.sp,
++                            fontWeight = FontWeight.SemiBold,
++                        )
++                        Text(
++                            text = when {
++                                readyCount == group.plants.size -> "$readyCount ready"
++                                readyCount > 0 -> "$readyCount ready / ${group.plants.size} planted"
++                                firstNotReady != null -> "Ready in ${formatRemaining(firstNotReady.endTime, now)}"
++                                else -> "Not ready"
++                            },
++                            color = if (readyCount > 0) StatusConnected else TextMuted,
++                            fontSize = 11.sp,
++                        )
++                    }
++                }
++            }
++        }
++
++        Spacer(modifier = Modifier.height(14.dp))
++
++        Button(
++            modifier = Modifier.fillMaxWidth(),
++            enabled = selectedTargets.isNotEmpty(),
++            onClick = {
++                val targets = selectedTargets
++                if (targets.isNotEmpty()) {
++                    onCollect(targets)
++                    // Clear immediately so repeated taps cannot accidentally resend the same batch
++                    // while waiting for the server's garden patches to arrive.
++                    selectedSpecies = emptySet()
++                }
++            },
++        ) {
++            Icon(
++                imageVector = Icons.Outlined.Bolt,
++                contentDescription = null,
++                modifier = Modifier.size(18.dp),
++            )
++            Spacer(modifier = Modifier.size(6.dp))
++            Text(
++                text = if (selectedTargets.isEmpty()) {
++                    "COLLECT SELECTED"
++                } else {
++                    "COLLECT ${selectedTargets.size} SELECTED"
++                },
++                fontWeight = FontWeight.Bold,
++            )
++        }
++
++        if (selectedSpecies.isNotEmpty() && selectedTargets.isEmpty()) {
++            Spacer(modifier = Modifier.height(8.dp))
++            Text(
++                text = "Selected crops are not mature yet.",
++                color = TextMuted,
++                fontSize = 11.sp,
++            )
++        }
++    }
++}
