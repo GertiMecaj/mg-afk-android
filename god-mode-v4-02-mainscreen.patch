@@ -1,0 +1,26 @@
+--- god_v3_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-07 16:40:42.464235932 +0000
++++ god_v4_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-07 17:23:29.424164751 +0000
+@@ -635,6 +635,10 @@
+                 plants = session.garden,
+                 pets = session.pets,
+                 produce = session.inventory.produce,
++                seeds = session.inventory.seeds,
++                seedSilo = session.seedSilo,
++                shops = session.shops,
++                freePlantTiles = session.freePlantTiles,
+                 apiReady = state.apiReady,
+                 onCollect = { targets, blockRules ->
+                     viewModel.harvestCrops(session.id, targets, blockRules)
+@@ -642,6 +646,12 @@
+                 onAutoFeedChanged = { enabled, petIds, feedBelowPercent ->
+                     viewModel.setGodAutoFeed(session.id, enabled, petIds, feedBelowPercent)
+                 },
++                onFastMoneyChanged = { enabled ->
++                    viewModel.setGodFastMoney(session.id, enabled)
++                },
++                onYuriPowerhouseChanged = { enabled, species, rules ->
++                    viewModel.setGodYuriPowerhouse(session.id, enabled, species, rules)
++                },
+             )
+         }
+         NavSection.PETS -> {
