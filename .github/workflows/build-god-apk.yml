@@ -51,7 +51,7 @@ jobs:
           patch -p2 < god-mode-v5-01-mainviewmodel.patch
           patch -p2 < god-mode-v5-02-mainscreen.patch
           cat god-mode-v5-03-godcard.part1 god-mode-v5-03-godcard.part2 | patch -p2
-          patch -p2 < god-mode-v6-config-before-on.patch
+          patch -p4 < god-mode-v6-config-before-on.patch
           patch -p2 < god-mode-v7-strawberry-only-feed.patch
 
       - name: Build debug APK
