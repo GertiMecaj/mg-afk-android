@@ -32,8 +32,15 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Apply GOD mode patch
-        run: patch -p2 < god-mode.patch
+      - name: Apply GOD mode patches
+        run: |
+          patch -p2 < god-mode.patch
+          patch -p2 < god-mode-v2-02-mainviewmodel.patch
+          patch -p2 < god-mode-v2-03-filterrules.patch
+          patch -p2 < god-mode-v2-04-mainscreen.patch
+          patch -p2 < god-mode-v2-05a-godcard.patch
+          patch -p2 < god-mode-v2-05b-godcard.patch
+          patch -p2 < god-mode-v2-05c-godcard.patch
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
