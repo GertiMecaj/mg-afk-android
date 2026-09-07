@@ -1,0 +1,82 @@
+diff -ruN /mnt/data/god_v5_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt /mnt/data/god_v6_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+--- /mnt/data/god_v5_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:50:44.334873496 +0000
++++ /mnt/data/god_v6_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:58:16.643934962 +0000
+@@ -585,7 +585,7 @@
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "Choose the seed types Fast Money is allowed to use. GOD buys only those selected seeds when they are in stock, plants only those purchased excess seeds, harvests the plots it planted, and sells only the produce created by this loop.",
++            "Configure your seed selection below before turning Fast Money on. GOD buys only those selected seeds when they are in stock, plants only those purchased excess seeds, harvests the plots it planted, and sells only the produce created by this loop.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
+@@ -714,7 +714,7 @@
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "Select any items from any shop. While enabled, Hoarder buys the full available stock of each selected shop item whenever it appears or restocks.",
++            "Configure the shop/item filters below before turning Hoarder on. While enabled, Hoarder buys the full available stock of each selected shop item whenever it appears or restocks.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
+@@ -884,19 +884,14 @@
+             }
+             Switch(
+                 checked = enabled,
+-                enabled = speciesOptions.isNotEmpty(),
+-                onCheckedChange = { checked ->
+-                    if (checked && selectedSpecies == null) {
+-                        selectedSpecies = speciesOptions.firstOrNull()
+-                    }
+-                    enabled = checked
+-                },
++                enabled = !selectedSpecies.isNullOrBlank(),
++                onCheckedChange = { enabled = it },
+             )
+         }
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "Select one plant species. While enabled, every mature crop of that species that does not match your protection rules is harvested and its newly-created produce is sold automatically. Protected crops are left in the garden indefinitely.",
++            "Choose the plant and protection filters below before turning YuriPowerhouse on. While enabled, every mature crop of that species that does not match your protection rules is harvested and its newly-created produce is sold automatically. Protected crops are left in the garden indefinitely.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
+@@ -1046,22 +1041,14 @@
+             }
+             Switch(
+                 checked = autoEnabled,
+-                enabled = pets.isNotEmpty(),
+-                onCheckedChange = { checked ->
+-                    if (checked && selectedPetIds.isEmpty()) {
+-                        selectedPetIds = pets
+-                            .filter { MgApi.findPet(it.species)?.diet?.isNotEmpty() == true }
+-                            .map { it.id }
+-                            .toSet()
+-                    }
+-                    autoEnabled = checked
+-                },
++                enabled = selectedPetIds.isNotEmpty(),
++                onCheckedChange = { autoEnabled = it },
+             )
+         }
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "Every cycle GOD prioritizes the selected pet with the lowest hunger. It bulk-feeds enough compatible produce to reach the threshold immediately; if food is missing, it bulk-harvests mature crops from that pet's diet first. The loop continues until you switch it off.",
++            "Choose the pets and hunger threshold below before turning Auto Feed on. Every cycle GOD prioritizes the selected pet with the lowest hunger, bulk-feeds enough compatible produce to reach the threshold, and bulk-harvests diet crops only when needed.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
+@@ -1104,7 +1091,10 @@
+             OutlinedButton(
+                 modifier = Modifier.weight(1f),
+                 enabled = selectedPetIds.isNotEmpty(),
+-                onClick = { selectedPetIds = emptySet() },
++                onClick = {
++                    selectedPetIds = emptySet()
++                    autoEnabled = false
++                },
+             ) {
+                 Text("Clear", fontSize = 11.sp)
+             }
