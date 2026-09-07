@@ -42,6 +42,9 @@ jobs:
           patch -p2 < god-mode-v2-05b-godcard.patch
           patch -p2 < god-mode-v2-05c-godcard.patch
           patch -p2 < god-mode-v3-lowest-bulk-feed.patch
+          cat god-mode-v4-01-mainviewmodel.part1 god-mode-v4-01-mainviewmodel.part2 | patch -p2
+          patch -p2 < god-mode-v4-02-mainscreen.patch
+          cat god-mode-v4-03-godcard.part1 god-mode-v4-03-godcard.part2 | patch -p2
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
