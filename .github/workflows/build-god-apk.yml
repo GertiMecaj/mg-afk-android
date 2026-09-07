@@ -45,6 +45,9 @@ jobs:
           cat god-mode-v4-01-mainviewmodel.part1 god-mode-v4-01-mainviewmodel.part2 | git apply --recount -p2 -
           patch -p2 < god-mode-v4-02-mainscreen.patch
           cat god-mode-v4-03-godcard.part1 god-mode-v4-03-godcard.part2 | git apply --recount -p2 -
+          patch -p2 < god-mode-v5-01-mainviewmodel.patch
+          patch -p2 < god-mode-v5-02-mainscreen.patch
+          cat god-mode-v5-03-godcard.part1 god-mode-v5-03-godcard.part2 | patch -p2
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
