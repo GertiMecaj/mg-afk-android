@@ -1,0 +1,457 @@
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str, marker: str):
+    p = Path(path)
+    text = p.read_text()
+    if marker in text:
+        print(f"already patched: {path} ({marker})")
+        return
+    if old not in text:
+        raise SystemExit(f"patch anchor not found in {path}: {old[:120]!r}")
+    p.write_text(text.replace(old, new, 1))
+    print(f"patched: {path}")
+
+
+def write_file(path: str, content: str):
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists() and p.read_text() == content:
+        print(f"unchanged: {path}")
+        return
+    p.write_text(content)
+    print(f"wrote: {path}")
+
+
+write_file(
+    "app/src/main/java/com/mgafk/app/ui/PlantLogStatus.kt",
+    '''package com.mgafk.app.ui
+
+/** UI state for a real Garden Journal logging attempt. */
+enum class PlantLogStatus {
+    LOGGING,
+    LOGGED,
+    NO_NEW_ENTRIES,
+    FAILED,
+}
+'''
+)
+
+write_file(
+    "app/src/main/java/com/mgafk/app/data/websocket/PlantJournalLogger.kt",
+    '''package com.mgafk.app.data.websocket
+
+import com.mgafk.app.data.AppLog
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
+/** Result of asking the actual game to record the inventory in the Garden Journal. */
+data class PlantJournalLogResult(
+    val journalChanged: Boolean,
+    val teleportedToCollectorsClub: Boolean,
+)
+
+/**
+ * Performs the real in-game journal flow used by the Collector's Club.
+ *
+ * `LogItems` is the game's own command. Before sending it, we inspect the live
+ * map for the Collector's Club / Garden Journal interaction and teleport the
+ * player's sprite to that location when the map exposes it. We never invent a
+ * coordinate: if a game version omits the building position from map state, we
+ * still send the real LogItems command but skip the cosmetic teleport.
+ */
+object PlantJournalLogger {
+    private const val TAG = "PlantJournalLogger"
+    private const val ARRIVAL_DELAY_MS = 350L
+    private const val CONFIRM_TIMEOUT_MS = 4_000L
+    private const val POLL_INTERVAL_MS = 150L
+
+    private val collectorMarkers = listOf(
+        "logitems",
+        "collector's club",
+        "collectors' club",
+        "collectorsclub",
+        "collectorclub",
+        "garden journal",
+        "gardenjournal",
+        "museum",
+    )
+
+    suspend fun log(client: RoomClient): PlantJournalLogResult {
+        val beforeJournal = journalSnapshot(client)
+        val destination = findCollectorsClubPosition(client)
+        val teleported = destination != null
+
+        if (destination != null) {
+            AppLog.d(TAG, "Collector's Club resolved at (${destination.first}, ${destination.second})")
+            client.actions.teleport(destination.first, destination.second)
+            delay(ARRIVAL_DELAY_MS)
+        } else {
+            AppLog.w(TAG, "Collector's Club position not present in live map; sending LogItems without teleport")
+        }
+
+        client.actions.logItems()
+
+        val changed = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) {
+            while (true) {
+                delay(POLL_INTERVAL_MS)
+                if (journalSnapshot(client) != beforeJournal) {
+                    return@withTimeoutOrNull true
+                }
+            }
+        } ?: false
+
+        AppLog.d(TAG, "LogItems completed: journalChanged=$changed teleported=$teleported")
+        return PlantJournalLogResult(
+            journalChanged = changed,
+            teleportedToCollectorsClub = teleported,
+        )
+    }
+
+    private fun journalSnapshot(client: RoomClient): String? {
+        if (client.playerId.isBlank()) return null
+        return client.gameState.getRawUserSlotData(client.playerId)?.get("journal")?.toString()
+    }
+
+    internal fun findCollectorsClubPosition(client: RoomClient): Pair<Double, Double>? {
+        val room = client.gameState.roomState as? JsonObject
+        val game = client.gameState.gameState as? JsonObject
+        val map = room?.get("map") as? JsonObject
+            ?: game?.get("map") as? JsonObject
+            ?: return null
+        return findCollectorsClubPosition(map)
+    }
+
+    /** Visible to tests so map-shape changes can be covered without a live socket. */
+    internal fun findCollectorsClubPosition(map: JsonObject): Pair<Double, Double>? {
+        val cols = map["cols"]?.jsonPrimitive?.intOrNull
+        val rows = map["rows"]?.jsonPrimitive?.intOrNull
+        return findMarkedPosition(map, cols, rows)
+    }
+
+    private fun findMarkedPosition(
+        element: JsonElement,
+        cols: Int?,
+        rows: Int?,
+    ): Pair<Double, Double>? {
+        return when (element) {
+            is JsonObject -> {
+                if (containsMarker(element, depth = 2)) {
+                    extractPosition(element, cols, rows)?.let { return it }
+                }
+                for (value in element.values) {
+                    findMarkedPosition(value, cols, rows)?.let { return it }
+                }
+                null
+            }
+            is JsonArray -> {
+                for (value in element) {
+                    findMarkedPosition(value, cols, rows)?.let { return it }
+                }
+                null
+            }
+            else -> null
+        }
+    }
+
+    private fun containsMarker(element: JsonElement, depth: Int): Boolean {
+        return when (element) {
+            is JsonPrimitive -> {
+                val text = element.contentOrNull?.lowercase().orEmpty()
+                collectorMarkers.any { it in text }
+            }
+            is JsonArray -> depth > 0 && element.any { containsMarker(it, depth - 1) }
+            is JsonObject -> {
+                if (element.keys.any { key -> collectorMarkers.any { it in key.lowercase() } }) return true
+                depth > 0 && element.values.any { containsMarker(it, depth - 1) }
+            }
+            else -> false
+        }
+    }
+
+    private fun extractPosition(
+        obj: JsonObject,
+        cols: Int?,
+        rows: Int?,
+    ): Pair<Double, Double>? {
+        val positionKeys = listOf("position", "at", "interactionPosition", "tilePosition", "worldPosition", "location")
+        for (key in positionKeys) {
+            val position = obj[key] as? JsonObject ?: continue
+            xy(position, cols, rows)?.let { return it }
+        }
+        xy(obj, cols, rows)?.let { return it }
+
+        if (cols != null && cols > 0) {
+            val tileKeys = listOf("globalTileIndex", "globalTileIdx", "tileIndex", "tileIdx")
+            for (key in tileKeys) {
+                val tile = obj[key]?.jsonPrimitive?.intOrNull ?: continue
+                if (tile < 0) continue
+                val x = (tile % cols).toDouble()
+                val y = (tile / cols).toDouble()
+                validPosition(x, y, cols, rows)?.let { return it }
+            }
+        }
+
+        for ((key, value) in obj) {
+            if (value !is JsonObject) continue
+            val keyLower = key.lowercase()
+            if (keyLower.contains("position") || keyLower.contains("location") || keyLower.contains("tile")) {
+                extractPosition(value, cols, rows)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun xy(obj: JsonObject, cols: Int?, rows: Int?): Pair<Double, Double>? {
+        val x = obj["x"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val y = obj["y"]?.jsonPrimitive?.doubleOrNull ?: return null
+        return validPosition(x, y, cols, rows)
+    }
+
+    private fun validPosition(
+        x: Double,
+        y: Double,
+        cols: Int?,
+        rows: Int?,
+    ): Pair<Double, Double>? {
+        if (!x.isFinite() || !y.isFinite() || x < 0.0 || y < 0.0) return null
+        if (cols != null && cols > 0 && x > cols + 1.0) return null
+        if (rows != null && rows > 0 && y > rows + 1.0) return null
+        return x to y
+    }
+}
+'''
+)
+
+write_file(
+    "app/src/test/java/com/mgafk/app/data/websocket/PlantJournalLoggerTest.kt",
+    '''package com.mgafk.app.data.websocket
+
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+class PlantJournalLoggerTest {
+    @Test
+    fun `finds collectors club by building name`() {
+        val map = buildJsonObject {
+            put("cols", 101)
+            put("rows", 80)
+            put("buildings", buildJsonArray {
+                add(buildJsonObject {
+                    put("name", "CollectorsClub")
+                    put("position", buildJsonObject {
+                        put("x", 72)
+                        put("y", 24)
+                    })
+                })
+            })
+        }
+
+        assertEquals(72.0 to 24.0, PlantJournalLogger.findCollectorsClubPosition(map))
+    }
+
+    @Test
+    fun `finds collectors club by nested LogItems interaction`() {
+        val map = buildJsonObject {
+            put("cols", 101)
+            put("rows", 80)
+            put("objects", buildJsonArray {
+                add(buildJsonObject {
+                    put("tileIndex", 2_500)
+                    put("interaction", buildJsonObject {
+                        put("type", "LogItems")
+                    })
+                })
+            })
+        }
+
+        assertEquals(76.0 to 24.0, PlantJournalLogger.findCollectorsClubPosition(map))
+    }
+}
+'''
+)
+
+vm = "app/src/main/java/com/mgafk/app/ui/MainViewModel.kt"
+replace_once(
+    vm,
+    'import com.mgafk.app.data.websocket.RoomClient\n',
+    'import com.mgafk.app.data.websocket.RoomClient\nimport com.mgafk.app.data.websocket.PlantJournalLogger\n',
+    'import com.mgafk.app.data.websocket.PlantJournalLogger',
+)
+replace_once(
+    vm,
+    '    val purchaseError: String = "",\n    val showShopTip: Boolean = false,\n',
+    '    val purchaseError: String = "",\n    val journalLogStatuses: Map<String, PlantLogStatus> = emptyMap(),\n    val showShopTip: Boolean = false,\n',
+    'val journalLogStatuses: Map<String, PlantLogStatus>',
+)
+vm_method = '''    /**
+     * Record a crop or potted plant through the game's real Garden Journal action.
+     * The logger moves the sprite to the Collector's Club when that building's
+     * live map position can be resolved, sends LogItems, then waits for the
+     * server-backed journal state to change before showing success.
+     */
+    fun logPlantToJournal(sessionId: String, itemId: String) {
+        val client = clients[sessionId] ?: return
+        val session = _state.value.sessions.find { it.id == sessionId } ?: return
+        val itemPresent = session.inventory.plants.any { it.id == itemId } ||
+            session.inventory.produce.any { it.id == itemId }
+        if (!itemPresent) {
+            AppLog.w(TAG, "[Journal] Item $itemId is no longer in inventory")
+            return
+        }
+
+        val statusKey = "$sessionId:$itemId"
+        _state.update { s ->
+            s.copy(journalLogStatuses = s.journalLogStatuses + (statusKey to PlantLogStatus.LOGGING))
+        }
+
+        viewModelScope.launch {
+            val finalStatus = try {
+                val result = PlantJournalLogger.log(client)
+                AppLog.d(
+                    TAG,
+                    "[Journal] item=$itemId changed=${result.journalChanged} " +
+                        "teleported=${result.teleportedToCollectorsClub}",
+                )
+                if (result.journalChanged) PlantLogStatus.LOGGED else PlantLogStatus.NO_NEW_ENTRIES
+            } catch (e: Exception) {
+                AppLog.w(TAG, "[Journal] Failed to log $itemId: ${e.message}")
+                PlantLogStatus.FAILED
+            }
+
+            _state.update { s ->
+                s.copy(journalLogStatuses = s.journalLogStatuses + (statusKey to finalStatus))
+            }
+
+            delay(3_500L)
+            _state.update { s ->
+                if (s.journalLogStatuses[statusKey] == finalStatus) {
+                    s.copy(journalLogStatuses = s.journalLogStatuses - statusKey)
+                } else s
+            }
+        }
+    }
+
+'''
+replace_once(
+    vm,
+    '    /** Sell multiple pets at once (one request per pet). */\n',
+    vm_method + '    /** Sell multiple pets at once (one request per pet). */\n',
+    'fun logPlantToJournal(sessionId: String, itemId: String)',
+)
+
+main = "app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt"
+replace_once(
+    main,
+    '                onPlantGardenPlant = { itemId -> viewModel.plantGardenPlant(session.id, itemId) },\n                onToggleLock = { itemId -> viewModel.toggleLockItem(session.id, itemId) },\n',
+    '                onPlantGardenPlant = { itemId -> viewModel.plantGardenPlant(session.id, itemId) },\n                journalLogStatus = { itemId -> state.journalLogStatuses["${session.id}:$itemId"] },\n                onLogPlant = { itemId -> viewModel.logPlantToJournal(session.id, itemId) },\n                onToggleLock = { itemId -> viewModel.toggleLockItem(session.id, itemId) },\n',
+    'journalLogStatus = { itemId -> state.journalLogStatuses',
+)
+
+inv = "app/src/main/java/com/mgafk/app/ui/screens/storage/InventoryCard.kt"
+replace_once(
+    inv,
+    'import com.mgafk.app.ui.components.AppCard\n',
+    'import com.mgafk.app.ui.PlantLogStatus\nimport com.mgafk.app.ui.components.AppCard\n',
+    'import com.mgafk.app.ui.PlantLogStatus',
+)
+replace_once(
+    inv,
+    '    onPlantGardenPlant: (itemId: String) -> Unit = {},\n    onToggleLock: (itemId: String) -> Unit = {},\n',
+    '    onPlantGardenPlant: (itemId: String) -> Unit = {},\n    journalLogStatus: (itemId: String) -> PlantLogStatus? = { null },\n    onLogPlant: (itemId: String) -> Unit = {},\n    onToggleLock: (itemId: String) -> Unit = {},\n',
+    'journalLogStatus: (itemId: String) -> PlantLogStatus?',
+)
+replace_once(
+    inv,
+    '                onToggleLock = { onToggleLock(plantLockId) },\n                onDismiss = { selectedPlantId = null },\n',
+    '                journalStatus = journalLogStatus(plantId),\n                onLog = { onLogPlant(plantId) },\n                onToggleLock = { onToggleLock(plantLockId) },\n                onDismiss = { selectedPlantId = null },\n',
+    'journalStatus = journalLogStatus(plantId)',
+)
+replace_once(
+    inv,
+    '                playerCount = playerCount,\n                onToggleLock = { onToggleLock(produceLockId) },\n',
+    '                playerCount = playerCount,\n                journalStatus = journalLogStatus(produceId),\n                onLog = { onLogPlant(produceId) },\n                onToggleLock = { onToggleLock(produceLockId) },\n',
+    'journalStatus = journalLogStatus(produceId)',
+)
+
+journal_button = '''// ── Garden Journal action ──
+
+@Composable
+private fun JournalLogButton(
+    status: PlantLogStatus?,
+    onLog: () -> Unit,
+) {
+    val label = when (status) {
+        PlantLogStatus.LOGGING -> "Logging at Collectors' Club…"
+        PlantLogStatus.LOGGED -> "Logged in Garden Journal"
+        PlantLogStatus.NO_NEW_ENTRIES -> "No new journal entries"
+        PlantLogStatus.FAILED -> "Log failed — retry"
+        null -> "Log in Garden Journal"
+    }
+    val color = when (status) {
+        PlantLogStatus.LOGGED -> StatusConnected
+        PlantLogStatus.NO_NEW_ENTRIES -> SurfaceDark
+        PlantLogStatus.FAILED -> Color(0xFFEF4444)
+        else -> Accent
+    }
+    val enabled = status != PlantLogStatus.LOGGING && status != PlantLogStatus.LOGGED
+
+    Button(
+        onClick = onLog,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = color,
+            disabledContainerColor = color.copy(alpha = 0.55f),
+            disabledContentColor = Color.White.copy(alpha = 0.8f),
+        ),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Text(label, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+    }
+}
+
+'''
+replace_once(
+    inv,
+    '// ── Plant (unpot) dialog ──\n',
+    journal_button + '// ── Plant (unpot) dialog ──\n',
+    'private fun JournalLogButton(',
+)
+replace_once(
+    inv,
+    '    freePlantTiles: Int,\n    isLocked: Boolean,\n    onPlant: () -> Unit,\n',
+    '    freePlantTiles: Int,\n    isLocked: Boolean,\n    journalStatus: PlantLogStatus?,\n    onLog: () -> Unit,\n    onPlant: () -> Unit,\n',
+    'journalStatus: PlantLogStatus?',
+)
+replace_once(
+    inv,
+    '            Spacer(modifier = Modifier.height(12.dp))\n\n            Button(\n                onClick = onPlant,\n',
+    '            Spacer(modifier = Modifier.height(12.dp))\n\n            JournalLogButton(status = journalStatus, onLog = onLog)\n\n            Spacer(modifier = Modifier.height(8.dp))\n\n            Button(\n                onClick = onPlant,\n',
+    'JournalLogButton(status = journalStatus, onLog = onLog)',
+)
+replace_once(
+    inv,
+    '    isLocked: Boolean,\n    playerCount: Int = 1,\n    onToggleLock: () -> Unit,\n    onSell: () -> Unit,\n',
+    '    isLocked: Boolean,\n    playerCount: Int = 1,\n    journalStatus: PlantLogStatus?,\n    onLog: () -> Unit,\n    onToggleLock: () -> Unit,\n    onSell: () -> Unit,\n',
+    'playerCount: Int = 1,\n    journalStatus: PlantLogStatus?',
+)
+replace_once(
+    inv,
+    '                Spacer(modifier = Modifier.height(16.dp))\n\n                // Sell button\n                Button(\n                    onClick = { showConfirm = true },\n',
+    '                Spacer(modifier = Modifier.height(16.dp))\n\n                JournalLogButton(status = journalStatus, onLog = onLog)\n\n                Spacer(modifier = Modifier.height(8.dp))\n\n                // Sell button\n                Button(\n                    onClick = { showConfirm = true },\n',
+    'JournalLogButton(status = journalStatus, onLog = onLog)\n\n                Spacer(modifier = Modifier.height(8.dp))\n\n                // Sell button',
+)
+
+print("Plant journal feature source patch complete")
