@@ -1,6 +1,9 @@
 name: Build GOD Mode APK
 
 on:
+  push:
+    branches:
+      - god-mode
   workflow_dispatch:
 
 permissions:
