@@ -1,0 +1,300 @@
+--- god_v3_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 17:04:31.186662119 +0000
++++ god_v4_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 17:25:05.498657583 +0000
+@@ -80,6 +80,8 @@
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.update
+ import kotlinx.coroutines.launch
++import kotlinx.coroutines.sync.Mutex
++import kotlin.math.abs
+ 
+ private class TokenExpiredException : Exception("Discord token expired")
+ 
+@@ -279,7 +281,15 @@
+         godAutoFeedConfigs.remove(id)
+         godAutoFeedJobs.remove(id)?.cancel()
+         godAutoFeedPendingPetUntil.remove(id)
++        godFastMoneyConfigs.remove(id)
++        godFastMoneyJobs.remove(id)?.cancel()
++        godFastMoneyPendingPlants.remove(id)
++        godFastMoneyTrackedTiles.remove(id)
++        godFastMoneyPendingSiloRetrieveUntil.remove(id)
++        godYuriConfigs.remove(id)
++        godYuriJobs.remove(id)?.cancel()
+         godAutoHarvestPendingUntil.remove(id)
++        godHarvestMutexes.remove(id)
+         stateCollector.reset(id)
+         val client = clients.remove(id)
+         client?.dispose()
+@@ -1420,33 +1430,269 @@
+ 
+         if (validTargets.isEmpty()) return
+ 
++        // Serialize manual GOD harvests with the automatic GOD loops. Holding the mutex until
++        // the harvested produce arrives prevents Fast Money/Yuri from mistaking these outputs
++        // for crops they should sell.
+         viewModelScope.launch {
+-            validTargets.forEachIndexed { index, (tileId, slotIndex) ->
+-                actions.harvestCrop(slot = tileId, slotsIndex = slotIndex)
+-                // Keep commands ordered while avoiding a single large WebSocket burst.
+-                if (index < validTargets.lastIndex) delay(50)
++            val mutex = godHarvestMutex(sessionId)
++            mutex.lock()
++            try {
++                val latest = _state.value.sessions.find { it.id == sessionId } ?: return@launch
++                val liveNow = System.currentTimeMillis()
++                val liveByKey = latest.garden.associateBy { it.tileId to it.slotIndex }
++                val pending = purgeGodHarvestPending(sessionId, liveNow)
++                val livePlants = validTargets.mapNotNull { key ->
++                    liveByKey[key]?.takeIf { plant ->
++                        plant.endTime > 0L &&
++                            liveNow >= plant.endTime &&
++                            key !in pending &&
++                            !isGodHarvestBlocked(plant, blockRules)
++                    }
++                }
++                if (livePlants.isEmpty()) return@launch
++
++                val beforeIds = latest.inventory.produce.map { it.id }.toSet()
++                livePlants.forEachIndexed { index, plant ->
++                    val key = plant.tileId to plant.slotIndex
++                    pending[key] = liveNow + 10000L
++                    actions.harvestCrop(slot = plant.tileId, slotsIndex = plant.slotIndex)
++                    if (index < livePlants.lastIndex) delay(50)
++                }
++                awaitGodHarvestOutputs(sessionId, beforeIds, livePlants)
++            } finally {
++                mutex.unlock()
+             }
+         }
+     }
+ 
+-    // ---- GOD pet auto-feed ----
++    // ---- GOD automation ----
+ 
+     private data class GodAutoFeedConfig(
+         val petIds: Set<String>,
+         val feedBelowPercent: Double,
+     )
+ 
++    private data class GodFastMoneyConfig(
++        /** Seed quantities that existed before Fast Money was enabled are reserved. */
++        val baselineSeedTotals: Map<String, Int>,
++    )
++
++    private data class GodPendingPlant(
++        val species: String,
++        val tileId: Int,
++        val beforeTotal: Int,
++        val expiresAt: Long,
++    )
++
++    private data class GodYuriConfig(
++        val species: String,
++        val blockRules: GodHarvestBlockRules,
++    )
++
+     private val godAutoFeedConfigs = mutableMapOf<String, GodAutoFeedConfig>()
+     private val godAutoFeedJobs = mutableMapOf<String, Job>()
+     private val godAutoFeedPendingPetUntil = mutableMapOf<String, MutableMap<String, Long>>()
++
++    /** Shared recent-harvest guard for every GOD loop so automations never double-harvest a slot. */
+     private val godAutoHarvestPendingUntil =
+         mutableMapOf<String, MutableMap<Pair<Int, Int>, Long>>()
+ 
++    /** Serializes GOD harvest windows so pet food cannot be mistaken for money-loop produce. */
++    private val godHarvestMutexes = mutableMapOf<String, Mutex>()
++
++    private val godFastMoneyConfigs = mutableMapOf<String, GodFastMoneyConfig>()
++    private val godFastMoneyJobs = mutableMapOf<String, Job>()
++    private val godFastMoneyPendingPlants = mutableMapOf<String, GodPendingPlant>()
++    private val godFastMoneyTrackedTiles = mutableMapOf<String, MutableMap<Int, String>>()
++    private val godFastMoneyPendingSiloRetrieveUntil = mutableMapOf<String, MutableMap<String, Long>>()
++
++    private val godYuriConfigs = mutableMapOf<String, GodYuriConfig>()
++    private val godYuriJobs = mutableMapOf<String, Job>()
++
++    private fun godHarvestMutex(sessionId: String): Mutex =
++        godHarvestMutexes.getOrPut(sessionId) { Mutex() }
++
++    private fun seedTotals(session: Session): Map<String, Int> {
++        val totals = mutableMapOf<String, Int>()
++        (session.inventory.seeds + session.seedSilo).forEach { seed ->
++            totals[seed.species] = (totals[seed.species] ?: 0) + seed.quantity
++        }
++        return totals
++    }
++
++    private fun purgeGodHarvestPending(sessionId: String, now: Long): MutableMap<Pair<Int, Int>, Long> {
++        val pending = godAutoHarvestPendingUntil.getOrPut(sessionId) { mutableMapOf() }
++        pending.entries.removeAll { it.value <= now }
++        return pending
++    }
++
++    private fun matchesHarvestOutput(
++        plant: GardenPlantSnapshot,
++        produce: InventoryProduceItem,
++        exact: Boolean,
++    ): Boolean {
++        if (plant.species != produce.species) return false
++        if (!exact) return true
++        return plant.mutations.toSet() == produce.mutations.toSet() &&
++            abs(plant.targetScale - produce.scale) <= 0.01
++    }
++
++    /**
++     * Maps newly-added inventory produce back to the crops harvested by one serialized GOD
++     * operation. Exact species/size/mutation matches are preferred, then species-only fallback.
++     */
++    private fun findGodHarvestOutputs(
++        beforeIds: Set<String>,
++        expectedPlants: List<GardenPlantSnapshot>,
++        produce: List<InventoryProduceItem>,
++    ): List<InventoryProduceItem> {
++        val pool = produce.filter { it.id !in beforeIds }.toMutableList()
++        val matched = mutableListOf<InventoryProduceItem>()
++        for (plant in expectedPlants) {
++            var index = pool.indexOfFirst { matchesHarvestOutput(plant, it, exact = true) }
++            if (index < 0) index = pool.indexOfFirst { matchesHarvestOutput(plant, it, exact = false) }
++            if (index >= 0) matched += pool.removeAt(index)
++        }
++
++        // Abilities can create bonus/double-harvest produce. Include extra new items that
++        // exactly match one of this operation's harvested crop signatures so those bonuses
++        // follow the same feed/sell destination rather than being left behind accidentally.
++        val bonusOutputs = pool.filter { item ->
++            expectedPlants.any { plant -> matchesHarvestOutput(plant, item, exact = true) }
++        }
++        matched += bonusOutputs
++        return matched
++    }
++
++    private suspend fun awaitGodHarvestOutputs(
++        sessionId: String,
++        beforeIds: Set<String>,
++        expectedPlants: List<GardenPlantSnapshot>,
++        timeoutMs: Long = 6000L,
++    ): List<InventoryProduceItem> {
++        if (expectedPlants.isEmpty()) return emptyList()
++        withTimeoutOrNull(timeoutMs) {
++            _state.first { state ->
++                val produce = state.sessions.find { it.id == sessionId }?.inventory?.produce.orEmpty()
++                findGodHarvestOutputs(beforeIds, expectedPlants, produce).size >= expectedPlants.size
++            }
++        }
++        // Give the last inventory patch a moment to settle, then return whatever arrived.
++        delay(120)
++        val latestProduce = _state.value.sessions
++            .find { it.id == sessionId }
++            ?.inventory
++            ?.produce
++            .orEmpty()
++        return findGodHarvestOutputs(beforeIds, expectedPlants, latestProduce)
++    }
++
++    /**
++     * Sells only [targetIds] even though the game exposes SellAllCrops rather than a direct
++     * single-produce sell command. Existing inventory produce is temporarily protected with
++     * locks, then its previous lock state is restored after the ordered SellAllCrops message.
++     */
++    private suspend fun sellOnlyGodProduce(sessionId: String, targetIds: Set<String>) {
++        if (targetIds.isEmpty()) return
++        val actions = clients[sessionId]?.actions ?: return
++        val session = _state.value.sessions.find { it.id == sessionId } ?: return
++        val allProduce = session.inventory.produce
++        val targets = allProduce.filter { it.id in targetIds }
++        if (targets.isEmpty()) return
++
++        val favorites = session.favoritedItemIds
++        val targetSpeciesLocks = targets.map { it.species }.filter { it in favorites }.toSet()
++        val temporaryItemLocks = mutableListOf<String>()
++
++        // Protect every non-target crop that would be unlocked during this sale window.
++        for (item in allProduce) {
++            if (item.id in targetIds) continue
++            val individuallyLocked = item.id in favorites
++            val speciesLocked = item.species in favorites
++            val speciesWillBeUnlocked = item.species in targetSpeciesLocks
++            val wouldBeSellable = !individuallyLocked && (!speciesLocked || speciesWillBeUnlocked)
++            if (wouldBeSellable) {
++                actions.toggleLockItem(item.id)
++                temporaryItemLocks += item.id
++                delay(12)
++            }
++        }
++
++        // A species-level favorite would also protect the freshly harvested target. Unlock the
++        // species only for this ordered sale, while the older members were individually guarded.
++        for (species in targetSpeciesLocks) {
++            actions.toggleLockItem(species)
++            delay(12)
++        }
++
++        // Individually-favorited target ids must be unlocked as well; they are about to be sold.
++        targets.filter { it.id in favorites }.forEach { item ->
++            actions.toggleLockItem(item.id)
++            delay(12)
++        }
++
++        actions.sellAllCrops()
++        delay(100)
++
++        // Restore persistent species favorites before exposing the temporarily protected items.
++        for (species in targetSpeciesLocks) {
++            actions.toggleLockItem(species)
++            delay(12)
++        }
++        for (itemId in temporaryItemLocks) {
++            actions.toggleLockItem(itemId)
++            delay(12)
++        }
++    }
++
+     /**
+-     * Starts or updates the indefinite GOD auto-feed loop for one session. The loop is
+-     * intentionally conservative: one feed/harvest action per cycle, with short pending
+-     * windows so a slow server patch cannot cause duplicate commands.
++     * Shared harvest -> identify exact new produce -> sell only those produce items pipeline.
++     * The caller supplies candidate keys and a final live-state predicate; the predicate is
++     * rechecked after acquiring the per-session GOD harvest mutex.
+      */
++    private suspend fun harvestAndSellGodPlants(
++        sessionId: String,
++        candidateKeys: Set<Pair<Int, Int>>,
++        canHarvest: (GardenPlantSnapshot) -> Boolean,
++    ): List<GardenPlantSnapshot> {
++        if (candidateKeys.isEmpty()) return emptyList()
++        val mutex = godHarvestMutex(sessionId)
++        mutex.lock()
++        try {
++            val actions = clients[sessionId]?.actions ?: return emptyList()
++            val session = _state.value.sessions.find { it.id == sessionId } ?: return emptyList()
++            if (!session.connected) return emptyList()
++            val now = System.currentTimeMillis()
++            val pending = purgeGodHarvestPending(sessionId, now)
++            val liveByKey = session.garden.associateBy { it.tileId to it.slotIndex }
++            val targets = candidateKeys
++                .mapNotNull { key -> liveByKey[key] }
++                .distinctBy { it.tileId to it.slotIndex }
++                .filter { plant ->
++                    val key = plant.tileId to plant.slotIndex
++                    key !in pending && plant.endTime > 0L && now >= plant.endTime && canHarvest(plant)
++                }
++            if (targets.isEmpty()) return emptyList()
++
++            val beforeIds = session.inventory.produce.map { it.id }.toSet()
++            targets.forEachIndexed { index, plant ->
++                val key = plant.tileId to plant.slotIndex
++                pending[key] = now + 10000L
++                actions.harvestCrop(slot = plant.tileId, slotsIndex = plant.slotIndex)
++                if (index < targets.lastIndex) delay(35)
++            }
++
++            val outputs = awaitGodHarvestOutputs(sessionId, beforeIds, targets)
++            if (outputs.isNotEmpty()) {
++                sellOnlyGodProduce(sessionId, outputs.map { it.id }.toSet())
++            }
++            return targets
++        } finally {
++            mutex.unlock()
++        }
++    }
