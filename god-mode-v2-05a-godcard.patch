@@ -1,0 +1,196 @@
+diff -ruN mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+--- mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 15:47:25.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 16:31:10.846043323 +0000
+@@ -13,14 +13,21 @@
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.outlined.Bolt
++import androidx.compose.material.icons.outlined.Pets
+ import androidx.compose.material3.Button
+ import androidx.compose.material3.Checkbox
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.material3.FilterChip
+ import androidx.compose.material3.Icon
+ import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.RangeSlider
++import androidx.compose.material3.Slider
++import androidx.compose.material3.Switch
+ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableFloatStateOf
+ import androidx.compose.runtime.mutableLongStateOf
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
+@@ -33,16 +40,24 @@
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.unit.sp
+ import com.mgafk.app.data.model.GardenPlantSnapshot
++import com.mgafk.app.data.model.InventoryProduceItem
++import com.mgafk.app.data.model.PetSnapshot
+ import com.mgafk.app.data.repository.MgApi
++import com.mgafk.app.data.websocket.Constants
+ import com.mgafk.app.ui.components.AppCard
+ import com.mgafk.app.ui.components.SpriteImage
++import com.mgafk.app.ui.god.GodFilterMatchMode
++import com.mgafk.app.ui.god.GodHarvestBlockRules
++import com.mgafk.app.ui.god.isGodHarvestBlocked
+ import com.mgafk.app.ui.theme.Accent
+ import com.mgafk.app.ui.theme.StatusConnected
++import com.mgafk.app.ui.theme.StatusError
+ import com.mgafk.app.ui.theme.SurfaceDark
+ import com.mgafk.app.ui.theme.TextMuted
+ import com.mgafk.app.ui.theme.TextPrimary
+ import com.mgafk.app.ui.theme.TextSecondary
+ import kotlinx.coroutines.delay
++import kotlin.math.roundToInt
+ 
+ private data class PlantGroup(
+     val species: String,
+@@ -50,6 +65,11 @@
+     val plants: List<GardenPlantSnapshot>,
+ )
+ 
++private val StringSetSaver = listSaver<Set<String>, String>(
++    save = { it.toList() },
++    restore = { it.toSet() },
++)
++
+ /** Recompose once per second so crops become selectable as soon as they mature. */
+ @Composable
+ private fun rememberGodClock(): Long {
+@@ -79,28 +99,59 @@
+     }
+ }
+ 
+-/**
+- * GOD mode: choose planted crop species, then harvest every mature crop belonging
+- * to the selected species with one button press.
+- *
+- * Selection is intentionally species-based rather than tile-based: selecting Carrot,
+- * for example, targets every mature planted Carrot across the garden, including
+- * individual grow slots on multi-slot plants.
+- */
+ @Composable
+ fun GodCard(
+     plants: List<GardenPlantSnapshot>,
++    pets: List<PetSnapshot> = emptyList(),
++    produce: List<InventoryProduceItem> = emptyList(),
+     apiReady: Boolean = false,
+-    onCollect: (List<Pair<Int, Int>>) -> Unit = {},
++    onCollect: (List<Pair<Int, Int>>, GodHarvestBlockRules) -> Unit = { _, _ -> },
++    onAutoFeedChanged: (enabled: Boolean, petIds: Set<String>, feedBelowPercent: Float) -> Unit = { _, _, _ -> },
++) {
++    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
++        GodMassHarvestCard(
++            plants = plants,
++            apiReady = apiReady,
++            onCollect = onCollect,
++        )
++        GodPetAutoFeedCard(
++            pets = pets,
++            produce = produce,
++            apiReady = apiReady,
++            onAutoFeedChanged = onAutoFeedChanged,
++        )
++    }
++}
++
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++private fun GodMassHarvestCard(
++    plants: List<GardenPlantSnapshot>,
++    apiReady: Boolean,
++    onCollect: (List<Pair<Int, Int>>, GodHarvestBlockRules) -> Unit,
+ ) {
+     val now = rememberGodClock()
+ 
+-    var selectedSpecies by rememberSaveable(
+-        stateSaver = listSaver<Set<String>, String>(
+-            save = { it.toList() },
+-            restore = { it.toSet() },
+-        ),
+-    ) { mutableStateOf(emptySet()) }
++    var selectedSpecies by rememberSaveable(stateSaver = StringSetSaver) {
++        mutableStateOf(emptySet())
++    }
++
++    var blockSizeRange by rememberSaveable { mutableStateOf(false) }
++    var sizeMin by rememberSaveable { mutableFloatStateOf(95f) }
++    var sizeMax by rememberSaveable { mutableFloatStateOf(100f) }
++    var blockGoldOrRainbow by rememberSaveable { mutableStateOf(false) }
++    var blockWeather by rememberSaveable { mutableStateOf(false) }
++    var matchModeName by rememberSaveable { mutableStateOf(GodFilterMatchMode.ANY.name) }
++    val matchMode = GodFilterMatchMode.valueOf(matchModeName)
++
++    val blockRules = GodHarvestBlockRules(
++        blockSizeRange = blockSizeRange,
++        minSizePercent = sizeMin.toDouble(),
++        maxSizePercent = sizeMax.toDouble(),
++        blockGoldOrRainbow = blockGoldOrRainbow,
++        blockWeatherAffected = blockWeather,
++        matchMode = matchMode,
++    )
+ 
+     val groups = remember(plants, apiReady) {
+         plants
+@@ -120,28 +171,35 @@
+             .sortedBy { it.displayName.lowercase() }
+     }
+ 
+-    // Remove selections for crops that are no longer planted.
+     val availableSpecies = remember(groups) { groups.map { it.species }.toSet() }
+     LaunchedEffect(availableSpecies) {
+         selectedSpecies = selectedSpecies.intersect(availableSpecies)
+     }
+ 
+-    val readySpecies = remember(groups, now) {
+-        groups.filter { group -> group.plants.any { it.isReady(now) } }
+-            .map { it.species }
+-            .toSet()
++    val readySpecies = remember(groups, now, blockRules) {
++        groups.filter { group ->
++            group.plants.any { it.isReady(now) && !isGodHarvestBlocked(it, blockRules) }
++        }.map { it.species }.toSet()
+     }
+ 
+-    val selectedTargets = remember(plants, selectedSpecies, now) {
++    val selectedTargets = remember(plants, selectedSpecies, now, blockRules) {
+         plants
+             .asSequence()
+-            .filter { it.species in selectedSpecies && it.isReady(now) }
++            .filter {
++                it.species in selectedSpecies &&
++                    it.isReady(now) &&
++                    !isGodHarvestBlocked(it, blockRules)
++            }
+             .map { it.tileId to it.slotIndex }
+             .distinct()
+             .toList()
+     }
+ 
+     val totalReady = remember(plants, now) { plants.count { it.isReady(now) } }
++    val totalBlockedReady = remember(plants, now, blockRules) {
++        plants.count { it.isReady(now) && isGodHarvestBlocked(it, blockRules) }
++    }
++    val enabledFilterCount = listOf(blockSizeRange, blockGoldOrRainbow, blockWeather).count { it }
+ 
+     AppCard(
+         title = "GOD — Mass Harvest",
+@@ -164,13 +222,13 @@
+             )
+             Column(modifier = Modifier.weight(1f)) {
+                 Text(
+-                    text = "Select crops, then collect them all at once.",
++                    text = "Select crops, protect what matters, then collect the rest.",
+                     color = TextPrimary,
+                     fontSize = 13.sp,
+                     fontWeight = FontWeight.SemiBold,
+                 )
+                 Text(
+-                    text = "$totalReady ready • ${plants.size} planted",
++                    text = "$totalReady ready • $totalBlockedReady blocked • ${plants.size} planted",
+                     color = TextSecondary,
+                     fontSize = 11.sp,
+                 )
