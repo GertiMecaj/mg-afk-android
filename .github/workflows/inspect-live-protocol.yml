@@ -19,57 +19,83 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import json, re, urllib.request, urllib.parse
+          import json, re, urllib.request, urllib.parse, collections
 
           UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36'
+          BASE = 'https://magicgarden.gg'
+          ACTIONS = [
+              'PlantSeed','PlantGardenPlant','WaterPlant','HarvestCrop','PotPlant',
+              'Preserve','DisplayCrop','PickupDisplayedCrop','RemoveGardenObject',
+              'MutationPotion','CropCleanser','SellAllCrops','PlaceDecor','PickupDecor',
+              'GrowEgg','HatchEgg','PlacePet','PickupPet','FeedPet','SellPet','NamePet',
+              'SwapPet','SwapPetFromStorage','MovePetSlot','RidePet','DismountPet',
+              'DawnCapture','Thundercharge','ReplenishPotion','XPPotion','EquipPetCosmetic',
+              'SavePetTeam','ApplyPetTeam','DeletePetTeam','MovePetTeam','SetPetTeamEmblem',
+              'MoveInventoryItem','ToggleLockItem','PutItemInStorage','RetrieveItemFromStorage',
+              'MoveStorageItem','SwapItemWithStorage','LogItems','PurchaseShopItem','Wish',
+              'Ping','PlayerPosition','Teleport','SetSelectedItem','PickupObject','DropObject',
+              'ThrowSnowball','CheckWeatherStatus','CheckFriendBonus','RequestPetGreet',
+              'QuinoaTutorialSkipped','UpgradePetHutch','UpgradeSeedSilo','UpgradeDecorShed',
+              'UpgradeToolShack'
+          ]
+
           def get(url):
               req = urllib.request.Request(url, headers={'User-Agent': UA})
               with urllib.request.urlopen(req, timeout=20) as r:
                   return r.geturl(), r.read().decode('utf-8', 'replace')
 
-          base = 'https://magicgarden.gg'
-          url, raw = get(base + '/platform/v1/version')
-          print('VERSION_URL', url)
-          print('VERSION_RESPONSE', raw)
-          try:
-              version = str(json.loads(raw).get('version', '')).strip()
-          except Exception:
-              version = ''
-          print('VERSION', version)
+          _, raw = get(BASE + '/platform/v1/version')
+          version = str(json.loads(raw).get('version','')).strip()
+          print('LIVE_VERSION', version)
+          room_url, html = get(BASE + '/r/test')
+          initial = [urllib.parse.urljoin(room_url, x) for x in re.findall(r'''(?:src|href)=["']([^"']+\.js(?:\?[^"']*)?)["']''', html)]
 
-          page_url, html = get(base + '/r/test')
-          print('ROOM_PAGE', page_url)
-          print('ROOM_HTML_HEAD', html[:3000].replace('\n',' '))
-          refs = sorted(set(re.findall(r'''(?:src|href)=["']([^"']+)["']''', html)))
-          print('PAGE_REFS')
-          for ref in refs:
-              print(ref)
-
-          # Probe common versioned index locations and any JS refs in the page.
-          candidates = []
-          for ref in refs:
-              if '.js' in ref:
-                  candidates.append(urllib.parse.urljoin(page_url, ref))
-          if version:
-              candidates += [
-                  f'{base}/version/{version}/index.js',
-                  f'{base}/version/{version}/assets/index.js',
-                  f'{base}/version/{version}/assets/main.js',
-              ]
-
+          q = collections.deque(initial)
           seen = set()
-          print('JS_PROBES')
-          for candidate in candidates:
-              if candidate in seen: continue
-              seen.add(candidate)
+          chunks = {}
+          max_chunks = 160
+          js_ref_re = re.compile(r'''["'`](?P<ref>(?:\./)?[^"'`\s]+\.js)["'`]''')
+          while q and len(seen) < max_chunks:
+              url = q.popleft()
+              if url in seen: continue
+              seen.add(url)
               try:
-                  final, text = get(candidate)
-                  print('OK', candidate, '->', final, 'bytes=', len(text))
-                  print('HEAD', text[:800].replace('\n',' '))
-                  for needle in ['QuinoaCommand','executedCommandSequence','HarvestCrop','PlantSeed','FeedPet','PurchaseShopItem','LogItems']:
-                      i = text.find(needle)
-                      if i >= 0:
-                          print('HIT', needle, text[max(0,i-300):i+500].replace('\n',' '))
+                  final, text = get(url)
               except Exception as e:
-                  print('ERR', candidate, repr(e))
+                  print('FETCH_ERR', url, repr(e))
+                  continue
+              chunks[final] = text
+              base_url = final.rsplit('/',1)[0] + '/'
+              for m in js_ref_re.finditer(text):
+                  ref = m.group('ref')
+                  nxt = urllib.parse.urljoin(base_url, ref)
+                  if nxt.startswith(BASE + f'/version/{version}/') and nxt not in seen:
+                      q.append(nxt)
+
+          print('CHUNKS_FETCHED', len(chunks))
+          print('TOTAL_BYTES', sum(len(v) for v in chunks.values()))
+
+          # Print focused contexts for sender/envelope structures and every action literal.
+          needles = ['QuinoaCommand','commandSequence','executedCommandSequence'] + ACTIONS
+          for needle in needles:
+              hits = []
+              for url, text in chunks.items():
+                  start = 0
+                  while len(hits) < 5:
+                      i = text.find(needle, start)
+                      if i < 0: break
+                      context = text[max(0,i-500):min(len(text),i+700)].replace('\n',' ')
+                      hits.append((url.rsplit('/',1)[-1], context))
+                      start = i + len(needle)
+                  if len(hits) >= 5: break
+              print('\n===', needle, 'HITS', len(hits), '===')
+              for filename, context in hits:
+                  print('FILE', filename)
+                  print(context)
+
+          # A compact inventory of action presence by chunk helps locate the protocol module.
+          print('\n=== ACTION_CHUNKS ===')
+          for action in ACTIONS:
+              files = [u.rsplit('/',1)[-1] for u,t in chunks.items() if action in t]
+              print(action, ':', ','.join(files[:8]) if files else 'MISSING')
           PY
