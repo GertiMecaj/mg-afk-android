@@ -27,12 +27,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
       - name: Apply source changes
         run: python3 .github/scripts/apply_plant_journal.py
 
       - name: Build and test
         run: |
-          chmod +x ./gradlew
+          gradle wrapper --gradle-version 9.3.1
           ./gradlew testDebugUnitTest assembleDebug --stacktrace
 
       - name: Upload debug APK
