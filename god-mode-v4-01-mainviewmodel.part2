@@ -1,0 +1,301 @@
++    /** Starts or updates the indefinite GOD auto-feed loop for one session. */
+     fun setGodAutoFeed(
+         sessionId: String,
+         enabled: Boolean,
+@@ -1457,7 +1703,6 @@
+             godAutoFeedConfigs.remove(sessionId)
+             godAutoFeedJobs.remove(sessionId)?.cancel()
+             godAutoFeedPendingPetUntil.remove(sessionId)
+-            godAutoHarvestPendingUntil.remove(sessionId)
+             return
+         }
+ 
+@@ -1476,7 +1721,7 @@
+         }
+     }
+ 
+-    private fun runGodAutoFeedStep(sessionId: String, config: GodAutoFeedConfig) {
++    private suspend fun runGodAutoFeedStep(sessionId: String, config: GodAutoFeedConfig) {
+         val actions = clients[sessionId]?.actions ?: return
+         val session = _state.value.sessions.find { it.id == sessionId } ?: return
+         if (!session.connected) return
+@@ -1484,8 +1729,7 @@
+         val now = System.currentTimeMillis()
+         val pendingPets = godAutoFeedPendingPetUntil.getOrPut(sessionId) { mutableMapOf() }
+         pendingPets.entries.removeAll { it.value <= now }
+-        val pendingHarvests = godAutoHarvestPendingUntil.getOrPut(sessionId) { mutableMapOf() }
+-        pendingHarvests.entries.removeAll { it.value <= now }
++        val pendingHarvests = purgeGodHarvestPending(sessionId, now)
+ 
+         data class HungryPet(
+             val pet: PetSnapshot,
+@@ -1493,8 +1737,6 @@
+             val hungerPercent: Double,
+         )
+ 
+-        // Re-rank every cycle. The hungriest selected pet always gets first priority,
+-        // regardless of its slot/order in session.pets.
+         val target = session.pets
+             .asSequence()
+             .filter { it.id in config.petIds }
+@@ -1509,9 +1751,7 @@
+             .minByOrNull { it.hungerPercent }
+             ?: return
+ 
+-        // Never skip past the current lowest pet just because a command for it is still
+-        // awaiting a server patch. Wait for that patch (or the short timeout) and rank
+-        // again; this preserves strict lowest-hunger-first ordering.
++        // Strict lowest-hunger priority: do not skip to another pet while this one is pending.
+         if (target.pet.id in pendingPets) return
+ 
+         val pet = target.pet
+@@ -1522,10 +1762,6 @@
+         var hungerNeeded = (targetHunger - pet.hunger).coerceAtLeast(0.0)
+         if (hungerNeeded <= 0.0) return
+ 
+-        // Hunger is tracked by the game in coin-value units. Build one bulk feed batch
+-        // whose estimated crop value reaches the configured threshold. This prevents one
+-        // very hungry pet from receiving a single crop every two seconds and starving the
+-        // rest of the selected team behind it.
+         val compatibleFood = session.inventory.produce
+             .asSequence()
+             .filter { it.species in diet }
+@@ -1555,16 +1791,14 @@
+             }
+ 
+             if (foodIds.isNotEmpty()) {
+-                // One optimistic inventory update + one burst of FeedPet commands.
+                 pendingPets[pet.id] = now + 2500L
+                 feedPet(sessionId, pet.id, foodIds)
+                 if (hungerNeeded <= 0.0) return
+             }
+         }
+ 
+-        // Inventory food was absent or insufficient. Harvest enough mature diet crops to
+-        // cover the remaining deficit estimate while the current bulk feed is processed.
+-        // The next cycle feeds the harvested produce after the inventory patch arrives.
++        // Inventory was insufficient. Bulk-harvest only enough mature diet crops to cover the
++        // remaining deficit, and hold the shared harvest mutex until those outputs arrive.
+         val harvestTargets = mutableListOf<GardenPlantSnapshot>()
+         var harvestValueNeeded = hungerNeeded
+         val crops = session.garden
+@@ -1598,13 +1832,215 @@
+             if (harvestValueNeeded <= 0.0) break
+         }
+ 
+-        if (harvestTargets.isNotEmpty()) {
+-            pendingPets[pet.id] = now + 2500L
+-            harvestTargets.forEach { crop ->
++        if (harvestTargets.isEmpty()) return
++
++        val mutex = godHarvestMutex(sessionId)
++        mutex.lock()
++        try {
++            val liveSession = _state.value.sessions.find { it.id == sessionId } ?: return
++            val liveNow = System.currentTimeMillis()
++            val livePending = purgeGodHarvestPending(sessionId, liveNow)
++            val liveByKey = liveSession.garden.associateBy { it.tileId to it.slotIndex }
++            val liveTargets = harvestTargets.mapNotNull { planned ->
++                val key = planned.tileId to planned.slotIndex
++                liveByKey[key]?.takeIf {
++                    it.species in diet && it.endTime > 0L && liveNow >= it.endTime && key !in livePending
++                }
++            }
++            if (liveTargets.isEmpty()) return
++
++            val beforeIds = liveSession.inventory.produce.map { it.id }.toSet()
++            pendingPets[pet.id] = liveNow + 5000L
++            liveTargets.forEachIndexed { index, crop ->
+                 val key = crop.tileId to crop.slotIndex
+-                pendingHarvests[key] = now + 10000L
++                livePending[key] = liveNow + 10000L
+                 actions.harvestCrop(slot = crop.tileId, slotsIndex = crop.slotIndex)
++                if (index < liveTargets.lastIndex) delay(35)
++            }
++            awaitGodHarvestOutputs(sessionId, beforeIds, liveTargets)
++        } finally {
++            mutex.unlock()
++        }
++    }
++
++    // ---- GOD Fast Money ----
++
++    fun setGodFastMoney(sessionId: String, enabled: Boolean) {
++        if (!enabled) {
++            godFastMoneyConfigs.remove(sessionId)
++            godFastMoneyJobs.remove(sessionId)?.cancel()
++            godFastMoneyPendingPlants.remove(sessionId)
++            godFastMoneyTrackedTiles.remove(sessionId)
++            godFastMoneyPendingSiloRetrieveUntil.remove(sessionId)
++            return
++        }
++
++        if (godFastMoneyConfigs[sessionId] == null) {
++            val session = _state.value.sessions.find { it.id == sessionId } ?: return
++            godFastMoneyConfigs[sessionId] = GodFastMoneyConfig(
++                baselineSeedTotals = seedTotals(session),
++            )
++        }
++
++        if (godFastMoneyJobs[sessionId]?.isActive == true) return
++        godFastMoneyJobs[sessionId] = viewModelScope.launch {
++            while (true) {
++                val config = godFastMoneyConfigs[sessionId] ?: break
++                runGodFastMoneyStep(sessionId, config)
++                delay(1200)
++            }
++        }
++    }
++
++    private suspend fun runGodFastMoneyStep(sessionId: String, config: GodFastMoneyConfig) {
++        val client = clients[sessionId] ?: return
++        var session = _state.value.sessions.find { it.id == sessionId } ?: return
++        if (!session.connected) return
++        val now = System.currentTimeMillis()
++
++        val tracked = godFastMoneyTrackedTiles.getOrPut(sessionId) { mutableMapOf() }
++        val pendingPlant = godFastMoneyPendingPlants[sessionId]
++
++        // Confirm or expire the single outstanding plant command. Requiring BOTH the expected
++        // garden tile and a seed-count decrease prevents us from repeatedly spending the same
++        // pre-patch inventory stack.
++        if (pendingPlant != null) {
++            val currentTotal = seedTotals(session)[pendingPlant.species] ?: 0
++            val tileConfirmed = session.garden.any {
++                it.tileId == pendingPlant.tileId && it.species == pendingPlant.species
++            }
++            if (tileConfirmed && currentTotal < pendingPlant.beforeTotal) {
++                tracked[pendingPlant.tileId] = pendingPlant.species
++                godFastMoneyPendingPlants.remove(sessionId)
++            } else if (now >= pendingPlant.expiresAt) {
++                godFastMoneyPendingPlants.remove(sessionId)
++            }
++        }
++
++        // Stop owning a tile as soon as it disappears or is replaced with another species.
++        tracked.entries.removeAll { (tileId, species) ->
++            val onTile = session.garden.filter { it.tileId == tileId }
++            onTile.isEmpty() || onTile.none { it.species == species }
++        }
++
++        // First monetize any mature crops that Fast Money itself planted.
++        val trackedSnapshot = tracked.toMap()
++        val candidateKeys = session.garden
++            .filter { plant -> trackedSnapshot[plant.tileId] == plant.species }
++            .map { it.tileId to it.slotIndex }
++            .toSet()
++        if (candidateKeys.isNotEmpty()) {
++            harvestAndSellGodPlants(sessionId, candidateKeys) { plant ->
++                trackedSnapshot[plant.tileId] == plant.species
++            }
++            session = _state.value.sessions.find { it.id == sessionId } ?: return
++        }
++
++        // Buy every seed that is currently in stock. purchaseAllShopItem performs its own
++        // optimistic stock-to-zero update, so the next loop will not duplicate the order while
++        // the server shop patch is in flight.
++        val seedShop = session.shops.find { it.type == "seed" }
++        if (seedShop != null) {
++            seedShop.itemNames.distinct().forEach { species ->
++                val stock = seedShop.itemStocks[species] ?: 0
++                if (stock > 0 && MgApi.getPlants().containsKey(species)) {
++                    purchaseAllShopItem(sessionId, "seed", species)
++                }
++            }
++        }
++
++        session = _state.value.sessions.find { it.id == sessionId } ?: return
++        if (godFastMoneyPendingPlants[sessionId] != null) return
++
++        val totals = seedTotals(session)
++        val excessSpecies = totals.keys
++            .filter { species ->
++                val baseline = config.baselineSeedTotals[species] ?: 0
++                (totals[species] ?: 0) > baseline
++            }
++            .sortedBy { species -> MgApi.findItem(species)?.baseSellPrice ?: Double.MAX_VALUE }
++        if (excessSpecies.isEmpty()) return
++
++        // If an auto-stock setting moved the newly purchased stack into the silo, retrieve it.
++        val retrievalPending = godFastMoneyPendingSiloRetrieveUntil
++            .getOrPut(sessionId) { mutableMapOf() }
++        retrievalPending.entries.removeAll { it.value <= now }
++
++        val species = excessSpecies.firstOrNull { candidate ->
++            val inventoryQty = session.inventory.seeds.find { it.species == candidate }?.quantity ?: 0
++            inventoryQty > 0
++        } ?: run {
++            val siloSpecies = excessSpecies.firstOrNull { candidate ->
++                val siloQty = session.seedSilo.find { it.species == candidate }?.quantity ?: 0
++                siloQty > 0 && candidate !in retrievalPending
++            }
++            if (siloSpecies != null) {
++                retrievalPending[siloSpecies] = now + 5000L
++                moveSeedFromSilo(sessionId, siloSpecies)
+             }
++            return
++        }
++
++        val occupied = occupiedPlantTiles(client) ?: return
++        val freeSlot = GardenTiles.firstFreeTile(occupied) ?: return
++        val beforeTotal = totals[species] ?: return
++        val baseline = config.baselineSeedTotals[species] ?: 0
++        if (beforeTotal <= baseline) return
++
++        godFastMoneyPendingPlants[sessionId] = GodPendingPlant(
++            species = species,
++            tileId = freeSlot,
++            beforeTotal = beforeTotal,
++            expiresAt = now + 8000L,
++        )
++        client.actions.plantSeed(slot = freeSlot, species = species)
++    }
++
++    // ---- GOD YuriPowerhouse ----
++
++    fun setGodYuriPowerhouse(
++        sessionId: String,
++        enabled: Boolean,
++        species: String,
++        blockRules: GodHarvestBlockRules,
++    ) {
++        if (!enabled || species.isBlank()) {
++            godYuriConfigs.remove(sessionId)
++            godYuriJobs.remove(sessionId)?.cancel()
++            return
++        }
++
++        godYuriConfigs[sessionId] = GodYuriConfig(species, blockRules)
++        if (godYuriJobs[sessionId]?.isActive == true) return
++        godYuriJobs[sessionId] = viewModelScope.launch {
++            while (true) {
++                val config = godYuriConfigs[sessionId] ?: break
++                runGodYuriStep(sessionId, config)
++                delay(1500)
++            }
++        }
++    }
++
++    private suspend fun runGodYuriStep(sessionId: String, config: GodYuriConfig) {
++        val session = _state.value.sessions.find { it.id == sessionId } ?: return
++        if (!session.connected) return
++        val now = System.currentTimeMillis()
++        val pending = purgeGodHarvestPending(sessionId, now)
++        val candidateKeys = session.garden
++            .asSequence()
++            .filter {
++                it.species == config.species &&
++                    it.endTime > 0L &&
++                    now >= it.endTime &&
++                    (it.tileId to it.slotIndex) !in pending &&
++                    !isGodHarvestBlocked(it, config.blockRules)
++            }
++            .map { it.tileId to it.slotIndex }
++            .toSet()
++        if (candidateKeys.isEmpty()) return
++
++        harvestAndSellGodPlants(sessionId, candidateKeys) { plant ->
++            plant.species == config.species && !isGodHarvestBlocked(plant, config.blockRules)
+         }
+     }
+ 
