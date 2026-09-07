@@ -1,0 +1,189 @@
+diff -ruN god_patch_test/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt god_v3_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt
+--- god_patch_test/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 16:40:42.460852943 +0000
++++ god_v3_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 17:04:31.186662119 +0000
+@@ -1487,60 +1487,123 @@
+         val pendingHarvests = godAutoHarvestPendingUntil.getOrPut(sessionId) { mutableMapOf() }
+         pendingHarvests.entries.removeAll { it.value <= now }
+ 
+-        val selectedPets = session.pets.filter { it.id in config.petIds }
+-        for (pet in selectedPets) {
+-            if (pet.id in pendingPets) continue
+-
+-            val maxHunger = Constants.maxHungerFor(pet.species) ?: 1000
+-            if (maxHunger <= 0) continue
+-            val hungerPercent = (pet.hunger / maxHunger.toDouble() * 100.0).coerceIn(0.0, 100.0)
+-            if (hungerPercent >= config.feedBelowPercent) continue
+-
+-            val diet = MgApi.findPet(pet.species)?.diet.orEmpty()
+-            if (diet.isEmpty()) continue
+-
+-            // Prefer plain, low-value compatible produce so automation does not eagerly
+-            // consume a mutated/valuable crop when a cheaper food item is available.
+-            val food = session.inventory.produce
+-                .asSequence()
+-                .filter { it.species in diet }
+-                .sortedWith(compareBy<InventoryProduceItem>(
+-                    { it.mutations.isNotEmpty() },
+-                    { PriceCalculator.calculateCropSellPrice(it.species, it.scale, it.mutations) ?: Long.MAX_VALUE },
+-                    { it.scale },
+-                ))
+-                .firstOrNull()
+-
+-            if (food != null) {
+-                pendingPets[pet.id] = now + 5000L
+-                feedPet(sessionId, pet.id, listOf(food.id))
+-                return
+-            }
+-
+-            // No compatible produce is available. Harvest one mature diet crop, again
+-            // preferring plain/low-value crops first. The next cycles wait for the
+-            // inventory patch before feeding it to the pet.
+-            val crop = session.garden
+-                .asSequence()
+-                .filter {
+-                    it.species in diet &&
+-                        it.endTime > 0L &&
+-                        now >= it.endTime &&
+-                        (it.tileId to it.slotIndex) !in pendingHarvests
+-                }
+-                .sortedWith(compareBy<GardenPlantSnapshot>(
+-                    { it.mutations.isNotEmpty() },
+-                    { PriceCalculator.calculateCropSellPrice(it.species, it.targetScale, it.mutations) ?: Long.MAX_VALUE },
+-                    { it.targetScale },
+-                ))
+-                .firstOrNull()
++        data class HungryPet(
++            val pet: PetSnapshot,
++            val maxHunger: Int,
++            val hungerPercent: Double,
++        )
++
++        // Re-rank every cycle. The hungriest selected pet always gets first priority,
++        // regardless of its slot/order in session.pets.
++        val target = session.pets
++            .asSequence()
++            .filter { it.id in config.petIds }
++            .mapNotNull { pet ->
++                val maxHunger = Constants.maxHungerFor(pet.species) ?: 1000
++                if (maxHunger <= 0) return@mapNotNull null
++                val hungerPercent = (pet.hunger / maxHunger.toDouble() * 100.0)
++                    .coerceIn(0.0, 100.0)
++                if (hungerPercent >= config.feedBelowPercent) return@mapNotNull null
++                HungryPet(pet, maxHunger, hungerPercent)
++            }
++            .minByOrNull { it.hungerPercent }
++            ?: return
++
++        // Never skip past the current lowest pet just because a command for it is still
++        // awaiting a server patch. Wait for that patch (or the short timeout) and rank
++        // again; this preserves strict lowest-hunger-first ordering.
++        if (target.pet.id in pendingPets) return
++
++        val pet = target.pet
++        val diet = MgApi.findPet(pet.species)?.diet.orEmpty()
++        if (diet.isEmpty()) return
++
++        val targetHunger = target.maxHunger * (config.feedBelowPercent / 100.0)
++        var hungerNeeded = (targetHunger - pet.hunger).coerceAtLeast(0.0)
++        if (hungerNeeded <= 0.0) return
++
++        // Hunger is tracked by the game in coin-value units. Build one bulk feed batch
++        // whose estimated crop value reaches the configured threshold. This prevents one
++        // very hungry pet from receiving a single crop every two seconds and starving the
++        // rest of the selected team behind it.
++        val compatibleFood = session.inventory.produce
++            .asSequence()
++            .filter { it.species in diet }
++            .map { food ->
++                val hungerValue = PriceCalculator.calculateCropSellPrice(
++                    food.species,
++                    food.scale,
++                    food.mutations,
++                )?.coerceAtLeast(1L) ?: 1L
++                food to hungerValue
++            }
++            .sortedWith(
++                compareBy<Pair<InventoryProduceItem, Long>>(
++                    { it.first.mutations.isNotEmpty() },
++                    { it.second },
++                    { it.first.scale },
++                )
++            )
++            .toList()
++
++        val foodIds = mutableListOf<String>()
++        if (compatibleFood.isNotEmpty()) {
++            for ((food, hungerValue) in compatibleFood) {
++                foodIds += food.id
++                hungerNeeded -= hungerValue.toDouble()
++                if (hungerNeeded <= 0.0) break
++            }
++
++            if (foodIds.isNotEmpty()) {
++                // One optimistic inventory update + one burst of FeedPet commands.
++                pendingPets[pet.id] = now + 2500L
++                feedPet(sessionId, pet.id, foodIds)
++                if (hungerNeeded <= 0.0) return
++            }
++        }
++
++        // Inventory food was absent or insufficient. Harvest enough mature diet crops to
++        // cover the remaining deficit estimate while the current bulk feed is processed.
++        // The next cycle feeds the harvested produce after the inventory patch arrives.
++        val harvestTargets = mutableListOf<GardenPlantSnapshot>()
++        var harvestValueNeeded = hungerNeeded
++        val crops = session.garden
++            .asSequence()
++            .filter {
++                it.species in diet &&
++                    it.endTime > 0L &&
++                    now >= it.endTime &&
++                    (it.tileId to it.slotIndex) !in pendingHarvests
++            }
++            .map { crop ->
++                val hungerValue = PriceCalculator.calculateCropSellPrice(
++                    crop.species,
++                    crop.targetScale,
++                    crop.mutations,
++                )?.coerceAtLeast(1L) ?: 1L
++                crop to hungerValue
++            }
++            .sortedWith(
++                compareBy<Pair<GardenPlantSnapshot, Long>>(
++                    { it.first.mutations.isNotEmpty() },
++                    { it.second },
++                    { it.first.targetScale },
++                )
++            )
++            .toList()
++
++        for ((crop, hungerValue) in crops) {
++            harvestTargets += crop
++            harvestValueNeeded -= hungerValue.toDouble()
++            if (harvestValueNeeded <= 0.0) break
++        }
+ 
+-            if (crop != null) {
++        if (harvestTargets.isNotEmpty()) {
++            pendingPets[pet.id] = now + 2500L
++            harvestTargets.forEach { crop ->
+                 val key = crop.tileId to crop.slotIndex
+                 pendingHarvests[key] = now + 10000L
+-                pendingPets[pet.id] = now + 5000L
+                 actions.harvestCrop(slot = crop.tileId, slotsIndex = crop.slotIndex)
+-                return
+             }
+         }
+     }
+diff -ruN god_patch_test/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt god_v3_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+--- god_patch_test/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 16:40:42.468376487 +0000
++++ god_v3_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:03:44.192813522 +0000
+@@ -552,7 +552,7 @@
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "When a selected pet falls below the threshold, GOD feeds the lowest-value compatible produce in inventory. If none is available, it harvests one mature crop from that pet's diet and feeds it after the inventory update arrives. The loop continues until you switch it off.",
++            "Every cycle GOD prioritizes the selected pet with the lowest hunger. It bulk-feeds enough compatible produce to reach the threshold immediately; if food is missing, it bulk-harvests mature crops from that pet's diet first. The loop continues until you switch it off.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
