@@ -1,0 +1,68 @@
+--- a/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt
++++ b/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt
+@@ -1775,6 +1775,9 @@
+         val compatibleFood = session.inventory.produce
+             .asSequence()
+             .filter { it.species == strawberrySpecies }
++            .filter { food ->
++                food.mutations.none { it.equals("Gold", true) || it.equals("Rainbow", true) }
++            }
+             .map { food ->
+                 val hungerValue = PriceCalculator.calculateCropSellPrice(
+                     food.species,
+@@ -1814,6 +1817,7 @@
+         val crops = session.garden
+             .asSequence()
+             .filter {
+                 it.species == strawberrySpecies &&
++                    it.mutations.none { mutation -> mutation.equals("Gold", true) || mutation.equals("Rainbow", true) } &&
+                     it.endTime > 0L &&
+                     now >= it.endTime &&
+                     (it.tileId to it.slotIndex) !in pendingHarvests
+@@ -1855,7 +1859,12 @@
+             val liveTargets = harvestTargets.mapNotNull { planned ->
+                 val key = planned.tileId to planned.slotIndex
+                 liveByKey[key]?.takeIf {
+-                    it.species == strawberrySpecies && it.endTime > 0L && liveNow >= it.endTime && key !in livePending
++                    it.species == strawberrySpecies &&
++                        it.mutations.none { mutation -> mutation.equals("Gold", true) || mutation.equals("Rainbow", true) } &&
++                        it.endTime > 0L &&
++                        liveNow >= it.endTime &&
++                        key !in livePending
+                 }
+             }
+             if (liveTargets.isEmpty()) return
+--- a/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
++++ b/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+@@ -1039,7 +1039,7 @@
+                     color = TextPrimary,
+                 )
+                 Text(
+-                    "Strawberry-only auto feeding.",
++                    "Strawberry-only auto feeding • Gold/Rainbow protected.",
+                     fontSize = 10.sp,
+                     color = TextSecondary,
+                 )
+@@ -1053,7 +1053,7 @@
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "Choose Strawberry-compatible pets and the hunger threshold before turning Auto Feed on. GOD always prioritizes the selected pet with the lowest hunger, feeds only Strawberries, and bulk-harvests only mature Strawberries when inventory does not contain enough.",
++            "Choose Strawberry-compatible pets and the hunger threshold before turning Auto Feed on. GOD always prioritizes the selected pet with the lowest hunger and uses only non-Gold, non-Rainbow Strawberries. Gold/Rainbow Strawberries are never harvested or fed by this automation.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
+@@ -1118,7 +1118,12 @@
+                 } else 100.0
+                 val checked = pet.id in selectedPetIds
+                 val canFeed = "Strawberry" in diet
+-                val compatibleInInventory = produce.count { it.species == "Strawberry" }
++                val compatibleInInventory = produce.count { food ->
++                    food.species == "Strawberry" &&
++                        food.mutations.none {
++                            it.equals("Gold", true) || it.equals("Rainbow", true)
++                        }
++                }
+ 
+                 Row(
+                     modifier = Modifier
