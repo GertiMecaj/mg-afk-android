@@ -33,7 +33,33 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Apply source changes
-        run: python3 .github/scripts/apply_plant_journal.py
+        run: |
+          python3 .github/scripts/apply_plant_journal.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/java/com/mgafk/app/data/websocket/PlantJournalLogger.kt")
+          text = p.read_text()
+          old = '''        val changed = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) {
+              while (true) {
+                  delay(POLL_INTERVAL_MS)
+                  if (journalSnapshot(client) != beforeJournal) {
+                      return@withTimeoutOrNull true
+                  }
+              }
+          } ?: false
+'''
+          new = '''        var changed = false
+          withTimeoutOrNull(CONFIRM_TIMEOUT_MS) {
+              while (!changed) {
+                  delay(POLL_INTERVAL_MS)
+                  changed = journalSnapshot(client) != beforeJournal
+              }
+          }
+'''
+          if old not in text:
+              raise SystemExit("confirmation-loop patch anchor not found")
+          p.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Build and test
         run: |
