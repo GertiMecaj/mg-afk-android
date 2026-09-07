@@ -1,0 +1,220 @@
+--- god_v3_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:03:44.192813522 +0000
++++ god_v4_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:23:18.322475671 +0000
+@@ -4,6 +4,8 @@
+ import androidx.compose.foundation.clickable
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.ExperimentalLayoutApi
++import androidx.compose.foundation.layout.FlowRow
+ import androidx.compose.foundation.layout.Row
+ import androidx.compose.foundation.layout.Spacer
+ import androidx.compose.foundation.layout.fillMaxWidth
+@@ -14,6 +16,7 @@
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.outlined.Bolt
+ import androidx.compose.material.icons.outlined.Pets
++import androidx.compose.material.icons.outlined.ShoppingCart
+ import androidx.compose.material3.Button
+ import androidx.compose.material3.Checkbox
+ import androidx.compose.material3.ExperimentalMaterial3Api
+@@ -41,7 +44,9 @@
+ import androidx.compose.ui.unit.sp
+ import com.mgafk.app.data.model.GardenPlantSnapshot
+ import com.mgafk.app.data.model.InventoryProduceItem
++import com.mgafk.app.data.model.InventorySeedItem
+ import com.mgafk.app.data.model.PetSnapshot
++import com.mgafk.app.data.model.ShopSnapshot
+ import com.mgafk.app.data.repository.MgApi
+ import com.mgafk.app.data.websocket.Constants
+ import com.mgafk.app.ui.components.AppCard
+@@ -104,9 +109,15 @@
+     plants: List<GardenPlantSnapshot>,
+     pets: List<PetSnapshot> = emptyList(),
+     produce: List<InventoryProduceItem> = emptyList(),
++    seeds: List<InventorySeedItem> = emptyList(),
++    seedSilo: List<InventorySeedItem> = emptyList(),
++    shops: List<ShopSnapshot> = emptyList(),
++    freePlantTiles: Int = 0,
+     apiReady: Boolean = false,
+     onCollect: (List<Pair<Int, Int>>, GodHarvestBlockRules) -> Unit = { _, _ -> },
+     onAutoFeedChanged: (enabled: Boolean, petIds: Set<String>, feedBelowPercent: Float) -> Unit = { _, _, _ -> },
++    onFastMoneyChanged: (Boolean) -> Unit = {},
++    onYuriPowerhouseChanged: (enabled: Boolean, species: String, rules: GodHarvestBlockRules) -> Unit = { _, _, _ -> },
+ ) {
+     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+         GodMassHarvestCard(
+@@ -114,6 +125,18 @@
+             apiReady = apiReady,
+             onCollect = onCollect,
+         )
++        GodFastMoneyCard(
++            seeds = seeds,
++            seedSilo = seedSilo,
++            shops = shops,
++            freePlantTiles = freePlantTiles,
++            onFastMoneyChanged = onFastMoneyChanged,
++        )
++        GodYuriPowerhouseCard(
++            plants = plants,
++            apiReady = apiReady,
++            onYuriPowerhouseChanged = onYuriPowerhouseChanged,
++        )
+         GodPetAutoFeedCard(
+             pets = pets,
+             produce = produce,
+@@ -482,6 +505,291 @@
+     }
+ }
+ 
++@Composable
++private fun GodFastMoneyCard(
++    seeds: List<InventorySeedItem>,
++    seedSilo: List<InventorySeedItem>,
++    shops: List<ShopSnapshot>,
++    freePlantTiles: Int,
++    onFastMoneyChanged: (Boolean) -> Unit,
++) {
++    var enabled by rememberSaveable { mutableStateOf(false) }
++    val seedShop = remember(shops) { shops.find { it.type == "seed" } }
++    val availableStock = remember(seedShop) {
++        seedShop?.itemStocks?.values?.sumOf { it.coerceAtLeast(0) } ?: 0
++    }
++    val ownedSeeds = remember(seeds, seedSilo) {
++        seeds.sumOf { it.quantity } + seedSilo.sumOf { it.quantity }
++    }
++
++    LaunchedEffect(enabled) {
++        onFastMoneyChanged(enabled)
++    }
++
++    AppCard(
++        title = "GOD — Fast Money",
++        persistKey = "god_fast_money",
++        collapsible = true,
++    ) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .background(Accent.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
++                .padding(12.dp),
++            verticalAlignment = Alignment.CenterVertically,
++            horizontalArrangement = Arrangement.spacedBy(10.dp),
++        ) {
++            Icon(
++                imageVector = Icons.Outlined.ShoppingCart,
++                contentDescription = null,
++                tint = Accent,
++                modifier = Modifier.size(22.dp),
++            )
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    "Buy → plant → harvest → sell",
++                    fontSize = 13.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    color = TextPrimary,
++                )
++                Text(
++                    "$availableStock seed stock • $ownedSeeds seeds owned • $freePlantTiles free tiles",
++                    fontSize = 10.sp,
++                    color = TextSecondary,
++                )
++            }
++            Switch(
++                checked = enabled,
++                onCheckedChange = { enabled = it },
++            )
++        }
++
++        Spacer(modifier = Modifier.height(10.dp))
++        Text(
++            "While enabled, GOD buys every seed currently available in the Seeds shop, plants purchased excess seeds into free dirt tiles, harvests those Fast Money plots as soon as they mature, and sells only the produce created by this loop.",
++            fontSize = 10.sp,
++            color = TextMuted,
++        )
++        Spacer(modifier = Modifier.height(6.dp))
++        Text(
++            "Seeds that already existed when Fast Money was enabled are reserved and are not intentionally consumed by this automation.",
++            fontSize = 9.sp,
++            color = TextMuted,
++        )
++
++        if (enabled) {
++            Spacer(modifier = Modifier.height(10.dp))
++            Text(
++                "FAST MONEY RUNNING",
++                fontSize = 10.sp,
++                fontWeight = FontWeight.Bold,
++                color = StatusConnected,
++            )
++        }
++    }
++}
++
++@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
++@Composable
++private fun GodYuriPowerhouseCard(
++    plants: List<GardenPlantSnapshot>,
++    apiReady: Boolean,
++    onYuriPowerhouseChanged: (enabled: Boolean, species: String, rules: GodHarvestBlockRules) -> Unit,
++) {
++    var enabled by rememberSaveable { mutableStateOf(false) }
++    var selectedSpecies by rememberSaveable { mutableStateOf<String?>(null) }
++
++    var blockSizeRange by rememberSaveable { mutableStateOf(false) }
++    var sizeMin by rememberSaveable { mutableFloatStateOf(95f) }
++    var sizeMax by rememberSaveable { mutableFloatStateOf(100f) }
++    var blockGoldOrRainbow by rememberSaveable { mutableStateOf(false) }
++    var blockWeather by rememberSaveable { mutableStateOf(false) }
++    var matchModeName by rememberSaveable { mutableStateOf(GodFilterMatchMode.ANY.name) }
++    val matchMode = GodFilterMatchMode.valueOf(matchModeName)
++
++    val blockRules = GodHarvestBlockRules(
++        blockSizeRange = blockSizeRange,
++        minSizePercent = sizeMin.toDouble(),
++        maxSizePercent = sizeMax.toDouble(),
++        blockGoldOrRainbow = blockGoldOrRainbow,
++        blockWeatherAffected = blockWeather,
++        matchMode = matchMode,
++    )
++
++    val speciesOptions = remember(plants, selectedSpecies, apiReady) {
++        (plants.map { it.species } + listOfNotNull(selectedSpecies))
++            .filter { it.isNotBlank() }
++            .distinct()
++            .sortedBy { species ->
++                (MgApi.findItem(species)?.name?.removeSuffix(" Seed") ?: species).lowercase()
++            }
++    }
++
++    val now = rememberGodClock()
++    val selectedPlants = remember(plants, selectedSpecies) {
++        plants.filter { it.species == selectedSpecies }
++    }
++    val readySelected = remember(selectedPlants, now) {
++        selectedPlants.count { it.isReady(now) }
++    }
++    val blockedReady = remember(selectedPlants, now, blockRules) {
++        selectedPlants.count { it.isReady(now) && isGodHarvestBlocked(it, blockRules) }
++    }
++    val enabledFilterCount = listOf(blockSizeRange, blockGoldOrRainbow, blockWeather).count { it }
++
++    LaunchedEffect(enabled, selectedSpecies, blockRules) {
++        onYuriPowerhouseChanged(
++            enabled && !selectedSpecies.isNullOrBlank(),
++            selectedSpecies.orEmpty(),
++            blockRules,
++        )
++    }
++
++    AppCard(
++        title = "GOD — YuriPowerhouse",
++        persistKey = "god_yuri_powerhouse",
++        collapsible = true,
++    ) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .background(Accent.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
++                .padding(12.dp),
++            verticalAlignment = Alignment.CenterVertically,
++            horizontalArrangement = Arrangement.spacedBy(10.dp),
