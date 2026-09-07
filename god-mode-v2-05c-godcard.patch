@@ -1,0 +1,245 @@
+diff -ruN mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+--- mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 15:47:25.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 16:31:10.846043323 +0000
+@@ -319,10 +452,240 @@
+         if (selectedSpecies.isNotEmpty() && selectedTargets.isEmpty()) {
+             Spacer(modifier = Modifier.height(8.dp))
+             Text(
+-                text = "Selected crops are not mature yet.",
++                text = "Selected crops are either immature or protected by the blocking filters.",
+                 color = TextMuted,
+                 fontSize = 11.sp,
+             )
+         }
+     }
++}
++
++@Composable
++private fun GodToggleRow(
++    title: String,
++    subtitle: String,
++    checked: Boolean,
++    onCheckedChange: (Boolean) -> Unit,
++) {
++    Row(
++        modifier = Modifier
++            .fillMaxWidth()
++            .padding(vertical = 3.dp),
++        verticalAlignment = Alignment.CenterVertically,
++        horizontalArrangement = Arrangement.spacedBy(8.dp),
++    ) {
++        Column(modifier = Modifier.weight(1f)) {
++            Text(title, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
++            Text(subtitle, fontSize = 9.sp, color = TextMuted)
++        }
++        Switch(checked = checked, onCheckedChange = onCheckedChange)
++    }
++}
++
++@Composable
++private fun GodPetAutoFeedCard(
++    pets: List<PetSnapshot>,
++    produce: List<InventoryProduceItem>,
++    apiReady: Boolean,
++    onAutoFeedChanged: (enabled: Boolean, petIds: Set<String>, feedBelowPercent: Float) -> Unit,
++) {
++    var autoEnabled by rememberSaveable { mutableStateOf(false) }
++    var selectedPetIds by rememberSaveable(stateSaver = StringSetSaver) {
++        mutableStateOf(emptySet())
++    }
++    var feedBelowPercent by rememberSaveable { mutableFloatStateOf(50f) }
++
++    val activeIds = remember(pets) { pets.map { it.id }.toSet() }
++    LaunchedEffect(activeIds) {
++        selectedPetIds = selectedPetIds.intersect(activeIds)
++    }
++    LaunchedEffect(autoEnabled, selectedPetIds, feedBelowPercent) {
++        onAutoFeedChanged(autoEnabled, selectedPetIds, feedBelowPercent)
++    }
++
++    AppCard(
++        title = "GOD — Pet Auto Feed",
++        persistKey = "god_pet_auto_feed",
++        collapsible = true,
++    ) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .background(Accent.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
++                .padding(12.dp),
++            verticalAlignment = Alignment.CenterVertically,
++            horizontalArrangement = Arrangement.spacedBy(10.dp),
++        ) {
++            Icon(
++                imageVector = Icons.Outlined.Pets,
++                contentDescription = null,
++                tint = Accent,
++                modifier = Modifier.size(22.dp),
++            )
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    "Auto collect + auto feed",
++                    fontSize = 13.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    color = TextPrimary,
++                )
++                Text(
++                    "Uses each selected pet's real diet from game data.",
++                    fontSize = 10.sp,
++                    color = TextSecondary,
++                )
++            }
++            Switch(
++                checked = autoEnabled,
++                enabled = pets.isNotEmpty(),
++                onCheckedChange = { checked ->
++                    if (checked && selectedPetIds.isEmpty()) {
++                        selectedPetIds = pets
++                            .filter { MgApi.findPet(it.species)?.diet?.isNotEmpty() == true }
++                            .map { it.id }
++                            .toSet()
++                    }
++                    autoEnabled = checked
++                },
++            )
++        }
++
++        Spacer(modifier = Modifier.height(10.dp))
++        Text(
++            "When a selected pet falls below the threshold, GOD feeds the lowest-value compatible produce in inventory. If none is available, it harvests one mature crop from that pet's diet and feeds it after the inventory update arrives. The loop continues until you switch it off.",
++            fontSize = 10.sp,
++            color = TextMuted,
++        )
++
++        Spacer(modifier = Modifier.height(10.dp))
++        Text(
++            "Feed below ${feedBelowPercent.roundToInt()}% hunger",
++            fontSize = 11.sp,
++            fontWeight = FontWeight.SemiBold,
++            color = TextPrimary,
++        )
++        Slider(
++            value = feedBelowPercent,
++            onValueChange = { feedBelowPercent = it },
++            valueRange = 5f..95f,
++            steps = 17,
++            modifier = Modifier.fillMaxWidth(),
++        )
++
++        if (pets.isEmpty()) {
++            Text("No active pets.", fontSize = 12.sp, color = TextMuted)
++            return@AppCard
++        }
++
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.spacedBy(8.dp),
++        ) {
++            OutlinedButton(
++                modifier = Modifier.weight(1f),
++                onClick = {
++                    selectedPetIds = pets
++                        .filter { MgApi.findPet(it.species)?.diet?.isNotEmpty() == true }
++                        .map { it.id }
++                        .toSet()
++                },
++            ) {
++                Text("Select all", fontSize = 11.sp)
++            }
++            OutlinedButton(
++                modifier = Modifier.weight(1f),
++                enabled = selectedPetIds.isNotEmpty(),
++                onClick = { selectedPetIds = emptySet() },
++            ) {
++                Text("Clear", fontSize = 11.sp)
++            }
++        }
++
++        Spacer(modifier = Modifier.height(8.dp))
++
++        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
++            pets.forEach { pet ->
++                val petEntry = remember(pet.species, apiReady) { MgApi.findPet(pet.species) }
++                val diet = petEntry?.diet.orEmpty()
++                val dietNames = remember(diet, apiReady) {
++                    diet.map { species -> MgApi.findItem(species)?.name?.removeSuffix(" Seed") ?: species }
++                }
++                val maxHunger = Constants.maxHungerFor(pet.species) ?: 1000
++                val hungerPercent = if (maxHunger > 0) {
++                    ((pet.hunger / maxHunger.toDouble()) * 100.0).coerceIn(0.0, 100.0)
++                } else 100.0
++                val checked = pet.id in selectedPetIds
++                val canFeed = diet.isNotEmpty()
++                val compatibleInInventory = produce.count { it.species in diet }
++
++                Row(
++                    modifier = Modifier
++                        .fillMaxWidth()
++                        .background(
++                            if (checked) Accent.copy(alpha = 0.10f) else SurfaceDark,
++                            RoundedCornerShape(10.dp),
++                        )
++                        .then(
++                            if (canFeed) Modifier.clickable {
++                                selectedPetIds = if (checked) selectedPetIds - pet.id else selectedPetIds + pet.id
++                            } else Modifier
++                        )
++                        .padding(horizontal = 10.dp, vertical = 8.dp),
++                    verticalAlignment = Alignment.CenterVertically,
++                ) {
++                    Checkbox(
++                        checked = checked,
++                        enabled = canFeed,
++                        onCheckedChange = { isChecked ->
++                            selectedPetIds = if (isChecked) selectedPetIds + pet.id else selectedPetIds - pet.id
++                        },
++                    )
++                    SpriteImage(
++                        category = "pets",
++                        name = pet.species,
++                        size = 36.dp,
++                        contentDescription = pet.name.ifBlank { pet.species },
++                        mutations = pet.mutations,
++                    )
++                    Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
++                        Text(
++                            pet.name.ifBlank { petEntry?.name ?: pet.species },
++                            fontSize = 13.sp,
++                            fontWeight = FontWeight.SemiBold,
++                            color = if (canFeed) TextPrimary else TextMuted,
++                        )
++                        Text(
++                            if (dietNames.isNotEmpty()) {
++                                "Diet: ${dietNames.joinToString(", ")} • $compatibleInInventory ready in inventory"
++                            } else {
++                                "No diet data available"
++                            },
++                            fontSize = 9.sp,
++                            color = TextMuted,
++                        )
++                    }
++                    Text(
++                        "${hungerPercent.roundToInt()}%",
++                        fontSize = 11.sp,
++                        fontWeight = FontWeight.Bold,
++                        color = if (hungerPercent < feedBelowPercent) StatusError else StatusConnected,
++                    )
++                }
++            }
++        }
++
++        if (autoEnabled) {
++            Spacer(modifier = Modifier.height(10.dp))
++            Text(
++                if (selectedPetIds.isEmpty()) {
++                    "Auto feed is ON, but no pets are selected."
++                } else {
++                    "AUTO FEED RUNNING • ${selectedPetIds.size} pet${if (selectedPetIds.size == 1) "" else "s"}"
++                },
++                fontSize = 10.sp,
++                fontWeight = FontWeight.Bold,
++                color = if (selectedPetIds.isEmpty()) StatusError else StatusConnected,
++            )
++        }
++    }
+ }
