@@ -1,0 +1,181 @@
+diff -ruN mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt
+--- mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 15:47:25.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 16:32:36.202203133 +0000
+@@ -53,11 +53,14 @@
+ import com.mgafk.app.data.repository.AppRelease
+ import com.mgafk.app.data.repository.VersionFetcher
+ import com.mgafk.app.data.websocket.ClientEvent
++import com.mgafk.app.data.websocket.Constants
+ import com.mgafk.app.data.websocket.RoomClient
+ import com.mgafk.app.service.AfkService
+ import com.mgafk.app.service.AfkWatchdogWorker
+ import com.mgafk.app.service.AlertNotifier
+ import com.mgafk.app.service.cancelResumeNotification
++import com.mgafk.app.ui.god.GodHarvestBlockRules
++import com.mgafk.app.ui.god.isGodHarvestBlocked
+ import kotlinx.serialization.json.JsonArray
+ import kotlinx.serialization.json.JsonObject
+ import kotlinx.serialization.json.contentOrNull
+@@ -273,6 +276,10 @@
+ 
+     fun removeSession(id: String) {
+         collectorJobs.remove(id)?.cancel()
++        godAutoFeedConfigs.remove(id)
++        godAutoFeedJobs.remove(id)?.cancel()
++        godAutoFeedPendingPetUntil.remove(id)
++        godAutoHarvestPendingUntil.remove(id)
+         stateCollector.reset(id)
+         val client = clients.remove(id)
+         client?.dispose()
+@@ -1389,10 +1396,14 @@
+ 
+     /**
+      * GOD mode batch harvest. The UI submits the selected tile/slot pairs in one tap;
+-     * this method validates them against the latest garden snapshot and sends the
+-     * HarvestCrop commands in a short sequence so the socket is not flooded at once.
++     * this method re-validates maturity AND the blocking filters against the latest
++     * garden snapshot before anything is sent.
+      */
+-    fun harvestCrops(sessionId: String, targets: List<Pair<Int, Int>>) {
++    fun harvestCrops(
++        sessionId: String,
++        targets: List<Pair<Int, Int>>,
++        blockRules: GodHarvestBlockRules = GodHarvestBlockRules(),
++    ) {
+         val actions = clients[sessionId]?.actions ?: return
+         val session = _state.value.sessions.find { it.id == sessionId } ?: return
+         val now = System.currentTimeMillis()
+@@ -1402,7 +1413,9 @@
+             .distinct()
+             .filter { key ->
+                 val plant = livePlants[key] ?: return@filter false
+-                plant.endTime > 0L && now >= plant.endTime
++                plant.endTime > 0L &&
++                    now >= plant.endTime &&
++                    !isGodHarvestBlocked(plant, blockRules)
+             }
+ 
+         if (validTargets.isEmpty()) return
+@@ -1415,6 +1428,122 @@
+             }
+         }
+     }
++
++    // ---- GOD pet auto-feed ----
++
++    private data class GodAutoFeedConfig(
++        val petIds: Set<String>,
++        val feedBelowPercent: Double,
++    )
++
++    private val godAutoFeedConfigs = mutableMapOf<String, GodAutoFeedConfig>()
++    private val godAutoFeedJobs = mutableMapOf<String, Job>()
++    private val godAutoFeedPendingPetUntil = mutableMapOf<String, MutableMap<String, Long>>()
++    private val godAutoHarvestPendingUntil =
++        mutableMapOf<String, MutableMap<Pair<Int, Int>, Long>>()
++
++    /**
++     * Starts or updates the indefinite GOD auto-feed loop for one session. The loop is
++     * intentionally conservative: one feed/harvest action per cycle, with short pending
++     * windows so a slow server patch cannot cause duplicate commands.
++     */
++    fun setGodAutoFeed(
++        sessionId: String,
++        enabled: Boolean,
++        petIds: Set<String>,
++        feedBelowPercent: Float,
++    ) {
++        if (!enabled || petIds.isEmpty()) {
++            godAutoFeedConfigs.remove(sessionId)
++            godAutoFeedJobs.remove(sessionId)?.cancel()
++            godAutoFeedPendingPetUntil.remove(sessionId)
++            godAutoHarvestPendingUntil.remove(sessionId)
++            return
++        }
++
++        godAutoFeedConfigs[sessionId] = GodAutoFeedConfig(
++            petIds = petIds,
++            feedBelowPercent = feedBelowPercent.toDouble().coerceIn(5.0, 95.0),
++        )
++
++        if (godAutoFeedJobs[sessionId]?.isActive == true) return
++        godAutoFeedJobs[sessionId] = viewModelScope.launch {
++            while (true) {
++                val config = godAutoFeedConfigs[sessionId] ?: break
++                runGodAutoFeedStep(sessionId, config)
++                delay(2000)
++            }
++        }
++    }
++
++    private fun runGodAutoFeedStep(sessionId: String, config: GodAutoFeedConfig) {
++        val actions = clients[sessionId]?.actions ?: return
++        val session = _state.value.sessions.find { it.id == sessionId } ?: return
++        if (!session.connected) return
++
++        val now = System.currentTimeMillis()
++        val pendingPets = godAutoFeedPendingPetUntil.getOrPut(sessionId) { mutableMapOf() }
++        pendingPets.entries.removeAll { it.value <= now }
++        val pendingHarvests = godAutoHarvestPendingUntil.getOrPut(sessionId) { mutableMapOf() }
++        pendingHarvests.entries.removeAll { it.value <= now }
++
++        val selectedPets = session.pets.filter { it.id in config.petIds }
++        for (pet in selectedPets) {
++            if (pet.id in pendingPets) continue
++
++            val maxHunger = Constants.maxHungerFor(pet.species) ?: 1000
++            if (maxHunger <= 0) continue
++            val hungerPercent = (pet.hunger / maxHunger.toDouble() * 100.0).coerceIn(0.0, 100.0)
++            if (hungerPercent >= config.feedBelowPercent) continue
++
++            val diet = MgApi.findPet(pet.species)?.diet.orEmpty()
++            if (diet.isEmpty()) continue
++
++            // Prefer plain, low-value compatible produce so automation does not eagerly
++            // consume a mutated/valuable crop when a cheaper food item is available.
++            val food = session.inventory.produce
++                .asSequence()
++                .filter { it.species in diet }
++                .sortedWith(compareBy<InventoryProduceItem>(
++                    { it.mutations.isNotEmpty() },
++                    { PriceCalculator.calculateCropSellPrice(it.species, it.scale, it.mutations) ?: Long.MAX_VALUE },
++                    { it.scale },
++                ))
++                .firstOrNull()
++
++            if (food != null) {
++                pendingPets[pet.id] = now + 5000L
++                feedPet(sessionId, pet.id, listOf(food.id))
++                return
++            }
++
++            // No compatible produce is available. Harvest one mature diet crop, again
++            // preferring plain/low-value crops first. The next cycles wait for the
++            // inventory patch before feeding it to the pet.
++            val crop = session.garden
++                .asSequence()
++                .filter {
++                    it.species in diet &&
++                        it.endTime > 0L &&
++                        now >= it.endTime &&
++                        (it.tileId to it.slotIndex) !in pendingHarvests
++                }
++                .sortedWith(compareBy<GardenPlantSnapshot>(
++                    { it.mutations.isNotEmpty() },
++                    { PriceCalculator.calculateCropSellPrice(it.species, it.targetScale, it.mutations) ?: Long.MAX_VALUE },
++                    { it.targetScale },
++                ))
++                .firstOrNull()
++
++            if (crop != null) {
++                val key = crop.tileId to crop.slotIndex
++                pendingHarvests[key] = now + 10000L
++                pendingPets[pet.id] = now + 5000L
++                actions.harvestCrop(slot = crop.tileId, slotsIndex = crop.slotIndex)
++                return
++            }
++        }
++    }
+ 
+     private val pendingCleanseJobs = mutableMapOf<String, Job>()
+ 
