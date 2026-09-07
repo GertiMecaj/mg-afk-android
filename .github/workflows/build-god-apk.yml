@@ -1,6 +1,9 @@
-name: Build GOD Mode APK
+name: Build GOD Mode APK - v1107 Fix
 
 on:
+  push:
+    branches:
+      - fix/current-actions
   workflow_dispatch:
 
 permissions:
@@ -51,16 +54,21 @@ jobs:
           sed -e 's#/mnt/data/god_v5_work/mg-afk-android-2.4.18/##g' -e 's#/mnt/data/god_v6_work/mg-afk-android-2.4.18/##g' god-mode-v6-config-before-on.patch | patch -p0
           patch -p2 < god-mode-v7-strawberry-only-feed.patch
           patch -p1 < god-mode-v8-pet-protect-gold-rainbow.patch
+          git apply --check magic-garden-v1107.patch
+          git apply magic-garden-v1107.patch
+
+      - name: Run unit tests
+        run: gradle --no-daemon testDebugUnitTest
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk MG-AFK-2.4.18-GOD.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk MG-AFK-GOD-v1107-FIX.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: MG-AFK-2.4.18-GOD
-          path: MG-AFK-2.4.18-GOD.apk
+          name: MG-AFK-GOD-v1107-FIX
+          path: MG-AFK-GOD-v1107-FIX.apk
           if-no-files-found: error
