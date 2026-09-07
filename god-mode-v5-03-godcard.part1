@@ -1,0 +1,170 @@
+--- god_v4_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:23:18.322475671 +0000
++++ god_v5_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:50:44.334873496 +0000
+@@ -116,7 +116,8 @@
+     apiReady: Boolean = false,
+     onCollect: (List<Pair<Int, Int>>, GodHarvestBlockRules) -> Unit = { _, _ -> },
+     onAutoFeedChanged: (enabled: Boolean, petIds: Set<String>, feedBelowPercent: Float) -> Unit = { _, _, _ -> },
+-    onFastMoneyChanged: (Boolean) -> Unit = {},
++    onFastMoneyChanged: (enabled: Boolean, selectedSpecies: Set<String>) -> Unit = { _, _ -> },
++    onHoarderChanged: (enabled: Boolean, selections: Set<String>) -> Unit = { _, _ -> },
+     onYuriPowerhouseChanged: (enabled: Boolean, species: String, rules: GodHarvestBlockRules) -> Unit = { _, _, _ -> },
+ ) {
+     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+@@ -132,6 +133,10 @@
+             freePlantTiles = freePlantTiles,
+             onFastMoneyChanged = onFastMoneyChanged,
+         )
++        GodHoarderCard(
++            shops = shops,
++            onHoarderChanged = onHoarderChanged,
++        )
+         GodYuriPowerhouseCard(
+             plants = plants,
+             apiReady = apiReady,
+@@ -505,25 +510,38 @@
+     }
+ }
+ 
++@OptIn(ExperimentalLayoutApi::class)
+ @Composable
+ private fun GodFastMoneyCard(
+     seeds: List<InventorySeedItem>,
+     seedSilo: List<InventorySeedItem>,
+     shops: List<ShopSnapshot>,
+     freePlantTiles: Int,
+-    onFastMoneyChanged: (Boolean) -> Unit,
++    onFastMoneyChanged: (Boolean, Set<String>) -> Unit,
+ ) {
+     var enabled by rememberSaveable { mutableStateOf(false) }
++    var selectedSpecies by rememberSaveable(stateSaver = StringSetSaver) {
++        mutableStateOf(emptySet())
++    }
+     val seedShop = remember(shops) { shops.find { it.type == "seed" } }
+-    val availableStock = remember(seedShop) {
+-        seedShop?.itemStocks?.values?.sumOf { it.coerceAtLeast(0) } ?: 0
++    val seedOptions = remember(seedShop) {
++        seedShop?.itemNames
++            ?.filter { it.isNotBlank() }
++            ?.distinct()
++            ?.sortedBy { species ->
++                (MgApi.findItem(species)?.name?.removeSuffix(" Seed") ?: species).lowercase()
++            }
++            .orEmpty()
++    }
++    val availableStock = remember(seedShop, selectedSpecies) {
++        selectedSpecies.sumOf { seedShop?.itemStocks?.get(it)?.coerceAtLeast(0) ?: 0 }
+     }
+-    val ownedSeeds = remember(seeds, seedSilo) {
+-        seeds.sumOf { it.quantity } + seedSilo.sumOf { it.quantity }
++    val ownedSeeds = remember(seeds, seedSilo, selectedSpecies) {
++        (seeds + seedSilo).filter { it.species in selectedSpecies }.sumOf { it.quantity }
+     }
+ 
+-    LaunchedEffect(enabled) {
+-        onFastMoneyChanged(enabled)
++    LaunchedEffect(enabled, selectedSpecies) {
++        onFastMoneyChanged(enabled && selectedSpecies.isNotEmpty(), selectedSpecies)
+     }
+ 
+     AppCard(
+@@ -547,32 +565,61 @@
+             )
+             Column(modifier = Modifier.weight(1f)) {
+                 Text(
+-                    "Buy → plant → harvest → sell",
++                    "BUY → PLANT → HARVEST → SELL",
+                     fontSize = 13.sp,
+                     fontWeight = FontWeight.SemiBold,
+                     color = TextPrimary,
+                 )
+                 Text(
+-                    "$availableStock seed stock • $ownedSeeds seeds owned • $freePlantTiles free tiles",
++                    "${selectedSpecies.size} selected • $availableStock selected stock • $ownedSeeds selected seeds owned • $freePlantTiles free tiles",
+                     fontSize = 10.sp,
+                     color = TextSecondary,
+                 )
+             }
+             Switch(
+                 checked = enabled,
++                enabled = selectedSpecies.isNotEmpty(),
+                 onCheckedChange = { enabled = it },
+             )
+         }
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "While enabled, GOD buys every seed currently available in the Seeds shop, plants purchased excess seeds into free dirt tiles, harvests those Fast Money plots as soon as they mature, and sells only the produce created by this loop.",
++            "Choose the seed types Fast Money is allowed to use. GOD buys only those selected seeds when they are in stock, plants only those purchased excess seeds, harvests the plots it planted, and sells only the produce created by this loop.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
++        Spacer(modifier = Modifier.height(8.dp))
++        Text("Seeds", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
++        if (seedOptions.isEmpty()) {
++            Text("No seed shop data available yet.", fontSize = 10.sp, color = TextMuted)
++        } else {
++            FlowRow(
++                horizontalArrangement = Arrangement.spacedBy(6.dp),
++                verticalArrangement = Arrangement.spacedBy(4.dp),
++            ) {
++                seedOptions.forEach { species ->
++                    val name = MgApi.findItem(species)?.name?.removeSuffix(" Seed") ?: species
++                    val stock = seedShop?.itemStocks?.get(species) ?: 0
++                    FilterChip(
++                        selected = species in selectedSpecies,
++                        onClick = {
++                            selectedSpecies = if (species in selectedSpecies) {
++                                selectedSpecies - species
++                            } else {
++                                selectedSpecies + species
++                            }
++                            if (selectedSpecies.isEmpty()) enabled = false
++                        },
++                        label = { Text(if (stock > 0) "$name ($stock)" else name, fontSize = 10.sp) },
++                    )
++                }
++            }
++        }
++
+         Spacer(modifier = Modifier.height(6.dp))
+         Text(
+-            "Seeds that already existed when Fast Money was enabled are reserved and are not intentionally consumed by this automation.",
++            "Seeds that existed before a species was selected are reserved and are not intentionally consumed by Fast Money.",
+             fontSize = 9.sp,
+             color = TextMuted,
+         )
+@@ -584,6 +631,160 @@
+                 fontSize = 10.sp,
+                 fontWeight = FontWeight.Bold,
+                 color = StatusConnected,
++            )
++        }
++    }
++}
++
++private fun godShopSelectionKey(shopType: String, itemName: String): String =
++    "$shopType\u001F$itemName"
++
++@OptIn(ExperimentalLayoutApi::class)
++@Composable
++private fun GodHoarderCard(
++    shops: List<ShopSnapshot>,
++    onHoarderChanged: (Boolean, Set<String>) -> Unit,
++) {
++    var enabled by rememberSaveable { mutableStateOf(false) }
++    var selectedItems by rememberSaveable(stateSaver = StringSetSaver) {
++        mutableStateOf(emptySet())
++    }
++
++    val shopOptions = remember(shops) {
++        shops
++            .filter { it.type.isNotBlank() }
++            .sortedBy { it.type.lowercase() }
++    }
++    val allKeys = remember(shopOptions) {
++        shopOptions.flatMap { shop ->
++            shop.itemNames.distinct().map { itemName -> godShopSelectionKey(shop.type, itemName) }
++        }.toSet()
++    }
++    val selectedInStock = remember(shopOptions, selectedItems) {
++        shopOptions.sumOf { shop ->
