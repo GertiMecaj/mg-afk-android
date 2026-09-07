@@ -1,0 +1,151 @@
+--- god_v4_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 17:25:05.498657583 +0000
++++ god_v5_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 17:50:44.334400724 +0000
+@@ -286,6 +286,8 @@
+         godFastMoneyPendingPlants.remove(id)
+         godFastMoneyTrackedTiles.remove(id)
+         godFastMoneyPendingSiloRetrieveUntil.remove(id)
++        godHoarderConfigs.remove(id)
++        godHoarderJobs.remove(id)?.cancel()
+         godYuriConfigs.remove(id)
+         godYuriJobs.remove(id)?.cancel()
+         godAutoHarvestPendingUntil.remove(id)
+@@ -1473,10 +1475,15 @@
+     )
+ 
+     private data class GodFastMoneyConfig(
++        val selectedSpecies: Set<String>,
+         /** Seed quantities that existed before Fast Money was enabled are reserved. */
+         val baselineSeedTotals: Map<String, Int>,
+     )
+ 
++    private data class GodHoarderConfig(
++        val selections: Set<String>,
++    )
++
+     private data class GodPendingPlant(
+         val species: String,
+         val tileId: Int,
+@@ -1506,6 +1513,9 @@
+     private val godFastMoneyTrackedTiles = mutableMapOf<String, MutableMap<Int, String>>()
+     private val godFastMoneyPendingSiloRetrieveUntil = mutableMapOf<String, MutableMap<String, Long>>()
+ 
++    private val godHoarderConfigs = mutableMapOf<String, GodHoarderConfig>()
++    private val godHoarderJobs = mutableMapOf<String, Job>()
++
+     private val godYuriConfigs = mutableMapOf<String, GodYuriConfig>()
+     private val godYuriJobs = mutableMapOf<String, Job>()
+ 
+@@ -1865,8 +1875,9 @@
+ 
+     // ---- GOD Fast Money ----
+ 
+-    fun setGodFastMoney(sessionId: String, enabled: Boolean) {
+-        if (!enabled) {
++    fun setGodFastMoney(sessionId: String, enabled: Boolean, selectedSpecies: Set<String>) {
++        val cleanedSelection = selectedSpecies.filter { it.isNotBlank() }.toSet()
++        if (!enabled || cleanedSelection.isEmpty()) {
+             godFastMoneyConfigs.remove(sessionId)
+             godFastMoneyJobs.remove(sessionId)?.cancel()
+             godFastMoneyPendingPlants.remove(sessionId)
+@@ -1875,12 +1886,26 @@
+             return
+         }
+ 
+-        if (godFastMoneyConfigs[sessionId] == null) {
+-            val session = _state.value.sessions.find { it.id == sessionId } ?: return
+-            godFastMoneyConfigs[sessionId] = GodFastMoneyConfig(
+-                baselineSeedTotals = seedTotals(session),
+-            )
++        val session = _state.value.sessions.find { it.id == sessionId } ?: return
++        val totals = seedTotals(session)
++        val previous = godFastMoneyConfigs[sessionId]
++        val baseline = cleanedSelection.associateWith { species ->
++            if (previous != null && species in previous.selectedSpecies) {
++                previous.baselineSeedTotals[species] ?: (totals[species] ?: 0)
++            } else {
++                totals[species] ?: 0
++            }
+         }
++        godFastMoneyConfigs[sessionId] = GodFastMoneyConfig(
++            selectedSpecies = cleanedSelection,
++            baselineSeedTotals = baseline,
++        )
++
++        godFastMoneyTrackedTiles[sessionId]?.entries?.removeAll { it.value !in cleanedSelection }
++        godFastMoneyPendingPlants[sessionId]?.let { pending ->
++            if (pending.species !in cleanedSelection) godFastMoneyPendingPlants.remove(sessionId)
++        }
++        godFastMoneyPendingSiloRetrieveUntil[sessionId]?.keys?.removeAll { it !in cleanedSelection }
+ 
+         if (godFastMoneyJobs[sessionId]?.isActive == true) return
+         godFastMoneyJobs[sessionId] = viewModelScope.launch {
+@@ -1920,7 +1945,7 @@
+         // Stop owning a tile as soon as it disappears or is replaced with another species.
+         tracked.entries.removeAll { (tileId, species) ->
+             val onTile = session.garden.filter { it.tileId == tileId }
+-            onTile.isEmpty() || onTile.none { it.species == species }
++            species !in config.selectedSpecies || onTile.isEmpty() || onTile.none { it.species == species }
+         }
+ 
+         // First monetize any mature crops that Fast Money itself planted.
+@@ -1943,7 +1968,7 @@
+         if (seedShop != null) {
+             seedShop.itemNames.distinct().forEach { species ->
+                 val stock = seedShop.itemStocks[species] ?: 0
+-                if (stock > 0 && MgApi.getPlants().containsKey(species)) {
++                if (species in config.selectedSpecies && stock > 0 && MgApi.getPlants().containsKey(species)) {
+                     purchaseAllShopItem(sessionId, "seed", species)
+                 }
+             }
+@@ -1955,6 +1980,7 @@
+         val totals = seedTotals(session)
+         val excessSpecies = totals.keys
+             .filter { species ->
++                if (species !in config.selectedSpecies) return@filter false
+                 val baseline = config.baselineSeedTotals[species] ?: 0
+                 (totals[species] ?: 0) > baseline
+             }
+@@ -1996,6 +2022,43 @@
+         client.actions.plantSeed(slot = freeSlot, species = species)
+     }
+ 
++    // ---- GOD Hoarder ----
++
++    fun setGodHoarder(sessionId: String, enabled: Boolean, selections: Set<String>) {
++        val cleaned = selections.filter { it.isNotBlank() }.toSet()
++        if (!enabled || cleaned.isEmpty()) {
++            godHoarderConfigs.remove(sessionId)
++            godHoarderJobs.remove(sessionId)?.cancel()
++            return
++        }
++
++        godHoarderConfigs[sessionId] = GodHoarderConfig(cleaned)
++        if (godHoarderJobs[sessionId]?.isActive == true) return
++        godHoarderJobs[sessionId] = viewModelScope.launch {
++            while (true) {
++                val config = godHoarderConfigs[sessionId] ?: break
++                runGodHoarderStep(sessionId, config)
++                delay(1000)
++            }
++        }
++    }
++
++    private suspend fun runGodHoarderStep(sessionId: String, config: GodHoarderConfig) {
++        val session = _state.value.sessions.find { it.id == sessionId } ?: return
++        if (!session.connected) return
++
++        for (shop in session.shops) {
++            for (itemName in shop.itemNames.distinct()) {
++                val key = "${shop.type}\u001F$itemName"
++                val stock = shop.itemStocks[itemName] ?: 0
++                if (key in config.selections && stock > 0) {
++                    purchaseAllShopItem(sessionId, shop.type, itemName)
++                    delay(35)
++                }
++            }
++        }
++    }
++
+     // ---- GOD YuriPowerhouse ----
+ 
+     fun setGodYuriPowerhouse(
