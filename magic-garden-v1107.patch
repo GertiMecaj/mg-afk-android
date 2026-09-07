@@ -1,7 +1,7 @@
 diff --git a/app/src/main/java/com/mgafk/app/data/websocket/GameActions.kt b/app/src/main/java/com/mgafk/app/data/websocket/GameActions.kt
 --- a/app/src/main/java/com/mgafk/app/data/websocket/GameActions.kt
 +++ b/app/src/main/java/com/mgafk/app/data/websocket/GameActions.kt
-@@ -177,10 +177,21 @@ class GameActions(
+@@ -177,10 +177,24 @@ class GameActions(
      fun waterPlant(slot: Int) =
          game("WaterPlant", obj("slot" to JsonPrimitive(slot)))
  
@@ -30,7 +30,7 @@ diff --git a/app/src/main/java/com/mgafk/app/data/websocket/GameActions.kt b/app
 diff --git a/app/src/test/java/com/mgafk/app/data/websocket/GameActionsCommandEnvelopeTest.kt b/app/src/test/java/com/mgafk/app/data/websocket/GameActionsCommandEnvelopeTest.kt
 --- a/app/src/test/java/com/mgafk/app/data/websocket/GameActionsCommandEnvelopeTest.kt
 +++ b/app/src/test/java/com/mgafk/app/data/websocket/GameActionsCommandEnvelopeTest.kt
-@@ -52,6 +52,8 @@ class GameActionsCommandEnvelopeTest {
+@@ -52,7 +52,15 @@ class GameActionsCommandEnvelopeTest {
          val command = msg["command"]?.jsonObject
          assertEquals(12, command?.get("slot")?.jsonPrimitive?.intOrNull)
          assertEquals(3, command?.get("slotsIndex")?.jsonPrimitive?.intOrNull)
