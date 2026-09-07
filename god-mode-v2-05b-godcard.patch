@@ -1,0 +1,136 @@
+diff -ruN mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+--- mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 15:47:25.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 16:31:10.846043323 +0000
+@@ -179,6 +237,74 @@
+ 
+         Spacer(modifier = Modifier.height(12.dp))
+ 
++        Text("Blocking filters", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
++        Text(
++            "Matching crops are protected and never included in the mass-harvest command.",
++            fontSize = 10.sp,
++            color = TextMuted,
++        )
++        Spacer(modifier = Modifier.height(6.dp))
++
++        GodToggleRow(
++            title = "Size range",
++            subtitle = "Protect ${sizeMin.roundToInt()}%–${sizeMax.roundToInt()}% size",
++            checked = blockSizeRange,
++            onCheckedChange = { blockSizeRange = it },
++        )
++        if (blockSizeRange) {
++            RangeSlider(
++                value = sizeMin..sizeMax,
++                onValueChange = { range ->
++                    sizeMin = range.start.coerceIn(0f, 100f)
++                    sizeMax = range.endInclusive.coerceIn(0f, 100f)
++                },
++                valueRange = 0f..100f,
++                steps = 99,
++                modifier = Modifier.fillMaxWidth(),
++            )
++        }
++
++        GodToggleRow(
++            title = "Gold / Rainbow",
++            subtitle = "Protect crops with either rare mutation",
++            checked = blockGoldOrRainbow,
++            onCheckedChange = { blockGoldOrRainbow = it },
++        )
++        GodToggleRow(
++            title = "Weather affected",
++            subtitle = "Wet, Frozen, Chilled, Thunderstruck, Amber and Dawn variants",
++            checked = blockWeather,
++            onCheckedChange = { blockWeather = it },
++        )
++
++        if (enabledFilterCount > 1) {
++            Spacer(modifier = Modifier.height(4.dp))
++            Text("Block when crop matches:", fontSize = 10.sp, color = TextMuted)
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                FilterChip(
++                    selected = matchMode == GodFilterMatchMode.ANY,
++                    onClick = { matchModeName = GodFilterMatchMode.ANY.name },
++                    label = { Text("ANY filter", fontSize = 10.sp) },
++                )
++                FilterChip(
++                    selected = matchMode == GodFilterMatchMode.ALL,
++                    onClick = { matchModeName = GodFilterMatchMode.ALL.name },
++                    label = { Text("ALL filters", fontSize = 10.sp) },
++                )
++            }
++            Text(
++                if (matchMode == GodFilterMatchMode.ANY) {
++                    "ANY: one matching enabled filter is enough to protect the crop."
++                } else {
++                    "ALL: the crop is protected only when every enabled filter matches."
++                },
++                fontSize = 10.sp,
++                color = TextMuted,
++            )
++        }
++
++        Spacer(modifier = Modifier.height(12.dp))
++
+         if (plants.isEmpty()) {
+             Text(
+                 text = "Nothing is currently planted in this garden.",
+@@ -197,7 +323,7 @@
+                 enabled = readySpecies.isNotEmpty(),
+                 onClick = { selectedSpecies = readySpecies },
+             ) {
+-                Text("Select all ready", fontSize = 11.sp)
++                Text("Select all harvestable", fontSize = 10.sp)
+             }
+             OutlinedButton(
+                 modifier = Modifier.weight(1f),
+@@ -212,9 +338,11 @@
+ 
+         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+             groups.forEach { group ->
+-                val readyCount = group.plants.count { it.isReady(now) }
++                val readyPlants = group.plants.filter { it.isReady(now) }
++                val blockedCount = readyPlants.count { isGodHarvestBlocked(it, blockRules) }
++                val harvestableCount = readyPlants.size - blockedCount
+                 val isSelected = group.species in selectedSpecies
+-                val enabled = readyCount > 0
++                val enabled = harvestableCount > 0
+                 val firstNotReady = group.plants
+                     .filterNot { it.isReady(now) }
+                     .minByOrNull { it.endTime }
+@@ -272,12 +400,19 @@
+                         )
+                         Text(
+                             text = when {
+-                                readyCount == group.plants.size -> "$readyCount ready"
+-                                readyCount > 0 -> "$readyCount ready / ${group.plants.size} planted"
+-                                firstNotReady != null -> "Ready in ${formatRemaining(firstNotReady.endTime, now)}"
++                                readyPlants.isNotEmpty() && blockedCount > 0 ->
++                                    "$harvestableCount harvestable • $blockedCount blocked • ${group.plants.size} planted"
++                                readyPlants.isNotEmpty() ->
++                                    "${readyPlants.size} ready / ${group.plants.size} planted"
++                                firstNotReady != null ->
++                                    "Ready in ${formatRemaining(firstNotReady.endTime, now)}"
+                                 else -> "Not ready"
+                             },
+-                            color = if (readyCount > 0) StatusConnected else TextMuted,
++                            color = when {
++                                harvestableCount > 0 -> StatusConnected
++                                blockedCount > 0 -> Accent
++                                else -> TextMuted
++                            },
+                             fontSize = 11.sp,
+                         )
+                     }
+@@ -293,9 +428,7 @@
+             onClick = {
+                 val targets = selectedTargets
+                 if (targets.isNotEmpty()) {
+-                    onCollect(targets)
+-                    // Clear immediately so repeated taps cannot accidentally resend the same batch
+-                    // while waiting for the server's garden patches to arrive.
++                    onCollect(targets, blockRules)
+                     selectedSpecies = emptySet()
+                 }
+             },
