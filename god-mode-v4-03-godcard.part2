@@ -1,0 +1,136 @@
++        ) {
++            Icon(
++                imageVector = Icons.Outlined.Bolt,
++                contentDescription = null,
++                tint = Accent,
++                modifier = Modifier.size(22.dp),
++            )
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    "Infinite selected-plant harvester",
++                    fontSize = 13.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    color = TextPrimary,
++                )
++                Text(
++                    if (selectedSpecies == null) {
++                        "Choose one planted species"
++                    } else {
++                        "$readySelected ready • $blockedReady protected • ${selectedPlants.size} planted"
++                    },
++                    fontSize = 10.sp,
++                    color = TextSecondary,
++                )
++            }
++            Switch(
++                checked = enabled,
++                enabled = speciesOptions.isNotEmpty(),
++                onCheckedChange = { checked ->
++                    if (checked && selectedSpecies == null) {
++                        selectedSpecies = speciesOptions.firstOrNull()
++                    }
++                    enabled = checked
++                },
++            )
++        }
++
++        Spacer(modifier = Modifier.height(10.dp))
++        Text(
++            "Select one plant species. While enabled, every mature crop of that species that does not match your protection rules is harvested and its newly-created produce is sold automatically. Protected crops are left in the garden indefinitely.",
++            fontSize = 10.sp,
++            color = TextMuted,
++        )
++
++        Spacer(modifier = Modifier.height(10.dp))
++        Text("Plant", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
++        if (speciesOptions.isEmpty()) {
++            Text("No planted species available to select yet.", fontSize = 10.sp, color = TextMuted)
++        } else {
++            FlowRow(
++                horizontalArrangement = Arrangement.spacedBy(6.dp),
++                verticalArrangement = Arrangement.spacedBy(4.dp),
++            ) {
++                speciesOptions.forEach { species ->
++                    val name = MgApi.findItem(species)?.name?.removeSuffix(" Seed") ?: species
++                    FilterChip(
++                        selected = selectedSpecies == species,
++                        onClick = { selectedSpecies = species },
++                        label = { Text(name, fontSize = 10.sp) },
++                    )
++                }
++            }
++        }
++
++        Spacer(modifier = Modifier.height(12.dp))
++        Text("Protecting filters", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
++        Text(
++            "These use the same blocking logic as Mass Harvest.",
++            fontSize = 10.sp,
++            color = TextMuted,
++        )
++        Spacer(modifier = Modifier.height(6.dp))
++
++        GodToggleRow(
++            title = "Size range",
++            subtitle = "Protect ${sizeMin.roundToInt()}%–${sizeMax.roundToInt()}% size",
++            checked = blockSizeRange,
++            onCheckedChange = { blockSizeRange = it },
++        )
++        if (blockSizeRange) {
++            RangeSlider(
++                value = sizeMin..sizeMax,
++                onValueChange = { range ->
++                    sizeMin = range.start.coerceIn(0f, 100f)
++                    sizeMax = range.endInclusive.coerceIn(0f, 100f)
++                },
++                valueRange = 0f..100f,
++                steps = 99,
++                modifier = Modifier.fillMaxWidth(),
++            )
++        }
++
++        GodToggleRow(
++            title = "Gold / Rainbow",
++            subtitle = "Protect crops with either rare mutation",
++            checked = blockGoldOrRainbow,
++            onCheckedChange = { blockGoldOrRainbow = it },
++        )
++        GodToggleRow(
++            title = "Weather affected",
++            subtitle = "Wet, Frozen, Chilled, Thunderstruck, Amber and Dawn variants",
++            checked = blockWeather,
++            onCheckedChange = { blockWeather = it },
++        )
++
++        if (enabledFilterCount > 1) {
++            Spacer(modifier = Modifier.height(4.dp))
++            Text("Protect when crop matches:", fontSize = 10.sp, color = TextMuted)
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                FilterChip(
++                    selected = matchMode == GodFilterMatchMode.ANY,
++                    onClick = { matchModeName = GodFilterMatchMode.ANY.name },
++                    label = { Text("ANY filter", fontSize = 10.sp) },
++                )
++                FilterChip(
++                    selected = matchMode == GodFilterMatchMode.ALL,
++                    onClick = { matchModeName = GodFilterMatchMode.ALL.name },
++                    label = { Text("ALL filters", fontSize = 10.sp) },
++                )
++            }
++        }
++
++        if (enabled) {
++            Spacer(modifier = Modifier.height(10.dp))
++            Text(
++                if (selectedSpecies.isNullOrBlank()) "YURIPOWERHOUSE WAITING FOR A PLANT" else "YURIPOWERHOUSE RUNNING",
++                fontSize = 10.sp,
++                fontWeight = FontWeight.Bold,
++                color = if (selectedSpecies.isNullOrBlank()) StatusError else StatusConnected,
++            )
++        }
++    }
++}
++
+ @Composable
+ private fun GodPetAutoFeedCard(
+     pets: List<PetSnapshot>,
