@@ -1,0 +1,16 @@
+--- god_v4_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-07 17:23:29.424164751 +0000
++++ god_v5_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-07 17:50:44.334697792 +0000
+@@ -646,8 +646,11 @@
+                 onAutoFeedChanged = { enabled, petIds, feedBelowPercent ->
+                     viewModel.setGodAutoFeed(session.id, enabled, petIds, feedBelowPercent)
+                 },
+-                onFastMoneyChanged = { enabled ->
+-                    viewModel.setGodFastMoney(session.id, enabled)
++                onFastMoneyChanged = { enabled, selectedSpecies ->
++                    viewModel.setGodFastMoney(session.id, enabled, selectedSpecies)
++                },
++                onHoarderChanged = { enabled, selections ->
++                    viewModel.setGodHoarder(session.id, enabled, selections)
+                 },
+                 onYuriPowerhouseChanged = { enabled, species, rules ->
+                     viewModel.setGodYuriPowerhouse(session.id, enabled, species, rules)
