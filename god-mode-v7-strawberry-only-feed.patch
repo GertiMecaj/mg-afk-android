@@ -1,0 +1,141 @@
+diff -ruN god_v6_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt god_v7_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt
+--- god_v6_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 17:50:44.334400724 +0000
++++ god_v7_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/MainViewModel.kt	2026-09-07 18:01:35.209220630 +0000
+@@ -1750,6 +1750,8 @@
+         val target = session.pets
+             .asSequence()
+             .filter { it.id in config.petIds }
++            // Strawberry-only mode: pets that cannot eat Strawberry are never targeted.
++            .filter { pet -> "Strawberry" in MgApi.findPet(pet.species)?.diet.orEmpty() }
+             .mapNotNull { pet ->
+                 val maxHunger = Constants.maxHungerFor(pet.species) ?: 1000
+                 if (maxHunger <= 0) return@mapNotNull null
+@@ -1765,8 +1767,7 @@
+         if (target.pet.id in pendingPets) return
+ 
+         val pet = target.pet
+-        val diet = MgApi.findPet(pet.species)?.diet.orEmpty()
+-        if (diet.isEmpty()) return
++        val strawberrySpecies = "Strawberry"
+ 
+         val targetHunger = target.maxHunger * (config.feedBelowPercent / 100.0)
+         var hungerNeeded = (targetHunger - pet.hunger).coerceAtLeast(0.0)
+@@ -1774,7 +1775,7 @@
+ 
+         val compatibleFood = session.inventory.produce
+             .asSequence()
+-            .filter { it.species in diet }
++            .filter { it.species == strawberrySpecies }
+             .map { food ->
+                 val hungerValue = PriceCalculator.calculateCropSellPrice(
+                     food.species,
+@@ -1807,14 +1808,14 @@
+             }
+         }
+ 
+-        // Inventory was insufficient. Bulk-harvest only enough mature diet crops to cover the
++        // Inventory was insufficient. Bulk-harvest only enough mature Strawberries to cover the
+         // remaining deficit, and hold the shared harvest mutex until those outputs arrive.
+         val harvestTargets = mutableListOf<GardenPlantSnapshot>()
+         var harvestValueNeeded = hungerNeeded
+         val crops = session.garden
+             .asSequence()
+             .filter {
+-                it.species in diet &&
++                it.species == strawberrySpecies &&
+                     it.endTime > 0L &&
+                     now >= it.endTime &&
+                     (it.tileId to it.slotIndex) !in pendingHarvests
+@@ -1854,7 +1855,7 @@
+             val liveTargets = harvestTargets.mapNotNull { planned ->
+                 val key = planned.tileId to planned.slotIndex
+                 liveByKey[key]?.takeIf {
+-                    it.species in diet && it.endTime > 0L && liveNow >= it.endTime && key !in livePending
++                    it.species == strawberrySpecies && it.endTime > 0L && liveNow >= it.endTime && key !in livePending
+                 }
+             }
+             if (liveTargets.isEmpty()) return
+diff -ruN god_v6_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt god_v7_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt
+--- god_v6_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 17:58:16.643934962 +0000
++++ god_v7_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/god/GodCard.kt	2026-09-07 18:01:35.209613461 +0000
+@@ -999,9 +999,14 @@
+     }
+     var feedBelowPercent by rememberSaveable { mutableFloatStateOf(50f) }
+ 
+-    val activeIds = remember(pets) { pets.map { it.id }.toSet() }
+-    LaunchedEffect(activeIds) {
+-        selectedPetIds = selectedPetIds.intersect(activeIds)
++    val strawberryEligibleIds = remember(pets, apiReady) {
++        pets.filter { pet -> "Strawberry" in MgApi.findPet(pet.species)?.diet.orEmpty() }
++            .map { it.id }
++            .toSet()
++    }
++    LaunchedEffect(strawberryEligibleIds) {
++        selectedPetIds = selectedPetIds.intersect(strawberryEligibleIds)
++        if (selectedPetIds.isEmpty()) autoEnabled = false
+     }
+     LaunchedEffect(autoEnabled, selectedPetIds, feedBelowPercent) {
+         onAutoFeedChanged(autoEnabled, selectedPetIds, feedBelowPercent)
+@@ -1034,7 +1039,7 @@
+                     color = TextPrimary,
+                 )
+                 Text(
+-                    "Uses each selected pet's real diet from game data.",
++                    "Strawberry-only auto feeding.",
+                     fontSize = 10.sp,
+                     color = TextSecondary,
+                 )
+@@ -1048,7 +1053,7 @@
+ 
+         Spacer(modifier = Modifier.height(10.dp))
+         Text(
+-            "Choose the pets and hunger threshold below before turning Auto Feed on. Every cycle GOD prioritizes the selected pet with the lowest hunger, bulk-feeds enough compatible produce to reach the threshold, and bulk-harvests diet crops only when needed.",
++            "Choose Strawberry-compatible pets and the hunger threshold before turning Auto Feed on. GOD always prioritizes the selected pet with the lowest hunger, feeds only Strawberries, and bulk-harvests only mature Strawberries when inventory does not contain enough.",
+             fontSize = 10.sp,
+             color = TextMuted,
+         )
+@@ -1080,10 +1085,7 @@
+             OutlinedButton(
+                 modifier = Modifier.weight(1f),
+                 onClick = {
+-                    selectedPetIds = pets
+-                        .filter { MgApi.findPet(it.species)?.diet?.isNotEmpty() == true }
+-                        .map { it.id }
+-                        .toSet()
++                    selectedPetIds = strawberryEligibleIds
+                 },
+             ) {
+                 Text("Select all", fontSize = 11.sp)
+@@ -1106,16 +1108,13 @@
+             pets.forEach { pet ->
+                 val petEntry = remember(pet.species, apiReady) { MgApi.findPet(pet.species) }
+                 val diet = petEntry?.diet.orEmpty()
+-                val dietNames = remember(diet, apiReady) {
+-                    diet.map { species -> MgApi.findItem(species)?.name?.removeSuffix(" Seed") ?: species }
+-                }
+                 val maxHunger = Constants.maxHungerFor(pet.species) ?: 1000
+                 val hungerPercent = if (maxHunger > 0) {
+                     ((pet.hunger / maxHunger.toDouble()) * 100.0).coerceIn(0.0, 100.0)
+                 } else 100.0
+                 val checked = pet.id in selectedPetIds
+-                val canFeed = diet.isNotEmpty()
+-                val compatibleInInventory = produce.count { it.species in diet }
++                val canFeed = "Strawberry" in diet
++                val compatibleInInventory = produce.count { it.species == "Strawberry" }
+ 
+                 Row(
+                     modifier = Modifier
+@@ -1154,10 +1153,10 @@
+                             color = if (canFeed) TextPrimary else TextMuted,
+                         )
+                         Text(
+-                            if (dietNames.isNotEmpty()) {
+-                                "Diet: ${dietNames.joinToString(", ")} • $compatibleInInventory ready in inventory"
++                            if (canFeed) {
++                                "Strawberry only • $compatibleInInventory in inventory"
+                             } else {
+-                                "No diet data available"
++                                "Cannot eat Strawberry"
+                             },
+                             fontSize = 9.sp,
+                             color = TextMuted,
