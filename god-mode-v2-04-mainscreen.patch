@@ -1,0 +1,20 @@
+diff -ruN mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt
+--- mg_afk_v1/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-07 15:46:22.000000000 +0000
++++ mg_afk_work/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/screens/MainScreen.kt	2026-09-07 16:31:34.732336034 +0000
+@@ -633,9 +633,14 @@
+         NavSection.GOD -> {
+             GodCard(
+                 plants = session.garden,
++                pets = session.pets,
++                produce = session.inventory.produce,
+                 apiReady = state.apiReady,
+-                onCollect = { targets ->
+-                    viewModel.harvestCrops(session.id, targets)
++                onCollect = { targets, blockRules ->
++                    viewModel.harvestCrops(session.id, targets, blockRules)
++                },
++                onAutoFeedChanged = { enabled, petIds, feedBelowPercent ->
++                    viewModel.setGodAutoFeed(session.id, enabled, petIds, feedBelowPercent)
+                 },
+             )
+         }
