@@ -36,7 +36,9 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Apply GOD mode patches
+        shell: bash
         run: |
+          set -o pipefail
           patch -p2 < god-mode.patch
           patch -p2 < god-mode-v2-02-mainviewmodel.patch
           patch -p2 < god-mode-v2-03-filterrules.patch
@@ -56,7 +58,15 @@ jobs:
           patch -p1 < god-mode-v8-pet-protect-gold-rainbow.patch
           git apply --check magic-garden-v1107.patch
           git apply magic-garden-v1107.patch
-          python3 apply-qol-v9.py
+          python3 apply-qol-v9.py 2>&1 | tee /tmp/qol-v9.log
+
+      - name: Upload QoL diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QOL-v9-diagnostic
+          path: /tmp/qol-v9.log
+          if-no-files-found: ignore
 
       - name: Run unit tests
         run: gradle --no-daemon testDebugUnitTest
