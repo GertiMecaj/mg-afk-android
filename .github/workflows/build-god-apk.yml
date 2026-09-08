@@ -58,6 +58,7 @@ jobs:
           patch -p1 < god-mode-v8-pet-protect-gold-rainbow.patch
           git apply --check magic-garden-v1107.patch
           git apply magic-garden-v1107.patch
+          python3 fix-qol-transformer.py
           python3 apply-qol-v9.py 2>&1 | tee /tmp/qol-v9.log
 
       - name: Upload QoL diagnostic
