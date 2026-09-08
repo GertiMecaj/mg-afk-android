@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect live command session lifecycle
+      - name: Inspect live garden scale schema
         shell: bash
         run: |
           python3 - <<'PY'
@@ -35,7 +35,7 @@ jobs:
           initial=[urllib.parse.urljoin(room_url,x) for x in re.findall(r'''(?:src|href)=["']([^"']+\.js(?:\?[^"']*)?)["']''',html)]
           q=collections.deque(initial); seen=set(); chunks={}
           ref_re=re.compile(r'''["'`](?P<ref>(?:\./)?[^"'`\s]+\.js)["'`]''')
-          while q and len(seen)<160:
+          while q and len(seen)<180:
               url=q.popleft()
               if url in seen: continue
               seen.add(url)
@@ -46,27 +46,26 @@ jobs:
               for m in ref_re.finditer(text):
                   ref=m.group('ref')
                   if ref.startswith('./'): ref=ref[2:]
-                  # Rolldown chunks use sibling asset filenames, not assets/assets.
                   nxt=root+ref.rsplit('/',1)[-1]
                   if nxt not in seen: q.append(nxt)
 
+          print('CHUNKS', len(chunks))
           needles=[
-              'isCommandSessionReady','commandSessionId','commandSessionReady',
-              'executedCommandSequence','QuinoaCommandResult','commandSession',
-              'function Qne','function yo','Qne=','yo=',
+              'targetScale','plantScale','maxScale','targetMaxScale','maxTargetScale',
+              'maturedAt','harvestReadyAt','growSlotIndex','HarvestCrop','baseSellPrice'
           ]
           for needle in needles:
               print('\n###',needle)
               count=0
               for url,text in chunks.items():
                   start=0
-                  while count<12:
+                  while count<16:
                       i=text.find(needle,start)
                       if i<0: break
                       print('FILE',url.rsplit('/',1)[-1])
-                      print(text[max(0,i-1200):min(len(text),i+1800)].replace('\n',' '))
+                      print(text[max(0,i-1600):min(len(text),i+2400)].replace('\n',' '))
                       print('---')
                       count+=1; start=i+len(needle)
-                  if count>=12: break
+                  if count>=16: break
               print('COUNT',count)
           PY
