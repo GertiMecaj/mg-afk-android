@@ -61,6 +61,7 @@ jobs:
           python3 fix-qol-transformer.py
           python3 apply-qol-v9.py 2>&1 | tee /tmp/qol-v9.log
           python3 fast-money-v10.py 2>&1 | tee /tmp/fast-money-v10.log
+          python3 fix-fast-money-harvest-signature.py
           python3 fix-garden-scale-v1107.py
           python3 background-always-on.py
 
