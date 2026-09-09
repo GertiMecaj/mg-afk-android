@@ -64,6 +64,7 @@ jobs:
           python3 background-always-on.py
           python3 fast-money-v10.py 2>&1 | tee /tmp/fast-money-v10.log
           python3 session-automation-v11.py 2>&1 | tee /tmp/session-automation-v11.log
+          python3 dedupe-hoarder-v11.py 2>&1 | tee /tmp/dedupe-hoarder-v11.log
 
       - name: Upload transformer diagnostic
         if: failure()
@@ -74,6 +75,7 @@ jobs:
             /tmp/qol-v9.log
             /tmp/fast-money-v10.log
             /tmp/session-automation-v11.log
+            /tmp/dedupe-hoarder-v11.log
           if-no-files-found: ignore
 
       - name: Run unit tests
