@@ -1,4 +1,4 @@
-name: Build GOD Mode APK - QoL v9 Garden Fix
+name: Build GOD Mode APK - Always On
 
 on:
   push:
@@ -61,6 +61,7 @@ jobs:
           python3 fix-qol-transformer.py
           python3 apply-qol-v9.py 2>&1 | tee /tmp/qol-v9.log
           python3 fix-garden-scale-v1107.py
+          python3 background-always-on.py
 
       - name: Upload QoL diagnostic
         if: failure()
@@ -77,11 +78,11 @@ jobs:
         run: gradle --no-daemon assembleDebug
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk MG-AFK-GOD-QOL-v9-GARDEN-FIX.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk MG-AFK-GOD-ALWAYS-ON.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: MG-AFK-GOD-QOL-v9-GARDEN-FIX
-          path: MG-AFK-GOD-QOL-v9-GARDEN-FIX.apk
+          name: MG-AFK-GOD-ALWAYS-ON
+          path: MG-AFK-GOD-ALWAYS-ON.apk
           if-no-files-found: error
