@@ -1,9 +1,9 @@
-name: Build GOD Mode APK - Always On
+name: Build GOD Mode APK - Fast Money Batch
 
 on:
   push:
     branches:
-      - fix/current-actions
+      - feat/fast-money-batch-persistence
   workflow_dispatch:
 
 permissions:
@@ -60,15 +60,18 @@ jobs:
           git apply magic-garden-v1107.patch
           python3 fix-qol-transformer.py
           python3 apply-qol-v9.py 2>&1 | tee /tmp/qol-v9.log
+          python3 fast-money-v10.py 2>&1 | tee /tmp/fast-money-v10.log
           python3 fix-garden-scale-v1107.py
           python3 background-always-on.py
 
-      - name: Upload QoL diagnostic
+      - name: Upload transformer diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: QOL-v9-diagnostic
-          path: /tmp/qol-v9.log
+          name: fast-money-v10-diagnostic
+          path: |
+            /tmp/qol-v9.log
+            /tmp/fast-money-v10.log
           if-no-files-found: ignore
 
       - name: Run unit tests
@@ -78,11 +81,11 @@ jobs:
         run: gradle --no-daemon assembleDebug
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk MG-AFK-GOD-ALWAYS-ON.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk MG-AFK-GOD-FAST-MONEY-BATCH.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: MG-AFK-GOD-ALWAYS-ON
-          path: MG-AFK-GOD-ALWAYS-ON.apk
+          name: MG-AFK-GOD-FAST-MONEY-BATCH
+          path: MG-AFK-GOD-FAST-MONEY-BATCH.apk
           if-no-files-found: error
