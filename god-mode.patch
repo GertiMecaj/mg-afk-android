@@ -73,9 +73,7 @@ diff -ruN mg_afk_clean/mg-afk-android-2.4.18/app/src/main/java/com/mgafk/app/ui/
  import androidx.compose.material.icons.outlined.Inventory2
  import androidx.compose.material.icons.outlined.MeetingRoom
  import androidx.compose.material.icons.outlined.Pets
-@@ -91,3 +92,4 @@
- import com.mgafk.app.ui.screens.logs.AbilityLogsCard
- import com.mgafk.app.ui.screens.garden.EggsCard
+@@ -94,1 +95,2 @@
  import com.mgafk.app.ui.screens.garden.GardenCard
 +import com.mgafk.app.ui.screens.god.GodCard
 @@ -131,6 +133,7 @@
