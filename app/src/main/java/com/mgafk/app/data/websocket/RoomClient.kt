@@ -94,6 +94,9 @@ class RoomClient {
     companion object {
         private const val TAG = "RoomClient"
 
+        /** Sent immediately when the WebSocket opens so the server admits the connection. */
+        private const val SOCKET_OPENED = """{"type":"SocketOpened"}"""
+
         /**
          * Player fields that only carry a value once the server has accepted our
          * mc_jwt cookie - a guest gets none of them. The field was `databaseUserId`
@@ -337,7 +340,12 @@ class RoomClient {
     // ---- Internal handlers ----
 
     private fun handleOpen() {
-        AppLog.d(TAG, "onOpen, sending handshake")
+        AppLog.d(TAG, "onOpen, announcing the socket")
+        send(SOCKET_OPENED)
+    }
+
+    private fun sendPostWelcomeHandshake() {
+        AppLog.d(TAG, "welcomed, sending handshake")
         actions.voteForGame()
         actions.setSelectedGame()
     }
@@ -427,6 +435,7 @@ class RoomClient {
 
         if (!welcomed) {
             welcomed = true
+            sendPostWelcomeHandshake()
             connectedAt = System.currentTimeMillis()
             state = "connected"
             val wasRetry = retryCount > 0
