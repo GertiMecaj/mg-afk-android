@@ -11,6 +11,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import com.mgafk.app.data.CrashLog
+import com.mgafk.app.data.NuclearLogStore
 import com.mgafk.app.data.repository.GeminiFetcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +48,7 @@ class MgAfkApp : Application(), ImageLoaderFactory {
         // how we get the real stack trace for intermittent background crashes
         // instead of guessing.
         CrashLog.install(this, if (isMain) "main" else "watchdog")
+        if (isMain) NuclearLogStore.initialize(this)
         CrashLog.trimIfLarge(this)
         createNotificationChannels()
         // The :watchdog process also instantiates Application; skip any

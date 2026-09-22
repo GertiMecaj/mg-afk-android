@@ -59,6 +59,8 @@ import com.mgafk.app.data.model.InventorySeedItem
 import com.mgafk.app.data.model.InventorySnapshot
 import com.mgafk.app.data.model.InventoryToolItem
 import com.mgafk.app.data.repository.MgApi
+import com.mgafk.app.ui.components.abilityBrush
+import com.mgafk.app.ui.components.abilityColor
 import com.mgafk.app.data.repository.PriceCalculator
 import com.mgafk.app.data.repository.StorageCapacity
 import com.mgafk.app.ui.components.AppCard
@@ -121,14 +123,6 @@ private fun curStr(species: String, xp: Double, max: Int): Int {
     val htm = MgApi.findPet(species)?.hoursToMature ?: return max - STR_GAINED
     val gained = minOf(STR_GAINED / htm * (xp / XP_PER_HOUR), STR_GAINED.toDouble())
     return ((max - STR_GAINED) + gained).toInt()
-}
-
-// ── Size percent ──
-
-private fun sizePercent(scale: Double, maxScale: Double): Double {
-    if (maxScale <= 1.0) return if (scale >= 1.0) 100.0 else scale * 100.0
-    return if (scale <= 1.0) scale * 50.0
-    else (50.0 + (scale - 1.0) / (maxScale - 1.0) * 50.0).coerceIn(0.0, 100.0)
 }
 
 private val RARITY_ORDER = listOf("Celestial", "Divine", "Mythic", "Mythical", "Legendary", "Rare", "Uncommon", "Common")
@@ -268,7 +262,7 @@ fun InventoryCard(
                 }
                 if (filteredTools.isNotEmpty()) SubSection("Tools", filteredTools.size) {
                     GridOf(filteredTools.size) { i ->
-                        Box(modifier = Modifier.clickable { selectedToolId = filteredTools[i].toolId }) {
+                        Box(modifier = Modifier.clickable { selectedToolId = filteredTools[i].storageKey }) {
                             LockOverlay(isLocked = filteredTools[i].toolId in favoritedItemIds) {
                                 QuantityTile(filteredTools[i].toolId, filteredTools[i].quantity, apiReady)
                             }
@@ -300,7 +294,7 @@ fun InventoryCard(
                 if (filteredProduce.isNotEmpty()) {
                     val totalProduceValue = remember(filteredProduce, apiReady, playerCount) {
                         filteredProduce.sumOf { p ->
-                            PriceCalculator.calculateCropSellPrice(p.species, p.scale, p.mutations, playerCount) ?: 0L
+                            PriceCalculator.calculateCropSellPrice(p.species, p.size, p.mutations, playerCount) ?: 0L
                         }
                     }
                     // Scoped to the full (unfiltered) inventory - matches the sell-all dialog
@@ -448,13 +442,16 @@ fun InventoryCard(
     }
 
     // Tool detail dialog
-    selectedToolId?.let { toolId ->
-        val liveTool = inventory.tools.find { it.toolId == toolId }
+    selectedToolId?.let { toolKey ->
+        val liveTool = inventory.tools.find { it.storageKey == toolKey }
         if (liveTool != null) {
+            val toolId = liveTool.toolId
             val canMoveToShack = StorageCapacity.canAddStackable(
                 currentCount = toolShackCount,
                 max = toolShackMax,
-                stackExists = toolId in toolShackToolIds,
+                // A tool the game tracks individually cannot merge into a stack: it needs a
+                // slot of its own, so the shack has to have one free.
+                stackExists = liveTool.isStackable && toolId in toolShackToolIds,
             )
             ItemDetailDialog(
                 itemId = toolId,
@@ -466,7 +463,7 @@ fun InventoryCard(
                 extraContent = if (!hasToolShack) null else ({
                     Button(
                         onClick = {
-                            onMoveToolToShack(toolId)
+                            onMoveToolToShack(liveTool.storageKey)
                             selectedToolId = null
                         },
                         enabled = canMoveToShack,
@@ -694,12 +691,11 @@ private fun QuantityTile(itemId: String, quantity: Int, apiReady: Boolean) {
 private fun ProduceTile(item: InventoryProduceItem, apiReady: Boolean, playerCount: Int = 1) {
     val entry = remember(item.species, apiReady) { MgApi.findItem(item.species) }
     val color = rarityColor(entry?.rarity)
-    val maxS = entry?.maxScale ?: 1.0
-    val pct = sizePercent(item.scale, maxS)
+    val pct = item.size.toDouble()
     val fraction = (pct / 100.0).toFloat().coerceIn(0f, 1f)
     val name = entry?.name?.removeSuffix(" Seed") ?: item.species
-    val price = remember(item.species, item.scale, item.mutations, apiReady, playerCount) {
-        PriceCalculator.calculateCropSellPrice(item.species, item.scale, item.mutations, playerCount)
+    val price = remember(item.species, item.size, item.mutations, apiReady, playerCount) {
+        PriceCalculator.calculateCropSellPrice(item.species, item.size, item.mutations, playerCount)
     }
 
     Column(
@@ -720,7 +716,7 @@ private fun ProduceTile(item: InventoryProduceItem, apiReady: Boolean, playerCou
                 Box(Modifier.fillMaxWidth(fraction).height(4.dp).background(color.copy(0.8f)))
             }
             Spacer(Modifier.width(3.dp))
-            Text("${pct.toInt()}%", fontSize = 7.sp, color = TextSecondary, fontWeight = FontWeight.Medium, lineHeight = 8.sp)
+            Text("${pct.toInt()}", fontSize = 7.sp, color = TextSecondary, fontWeight = FontWeight.Medium, lineHeight = 8.sp)
         }
         if (price != null) {
             Text(PriceCalculator.formatPrice(price), fontSize = 8.sp, fontWeight = FontWeight.Bold,
@@ -742,7 +738,7 @@ private fun PlantTile(item: InventoryPlantItem, apiReady: Boolean) {
     val name = entry?.name?.removeSuffix(" Seed") ?: item.species
     val color = rarityColor(entry?.rarity)
     val slots = remember(item.slots) {
-        item.slots.map { PlantSlotRender(it.species, it.mutations, it.targetScale) }
+        item.slots.map { PlantSlotRender(it.species, it.mutations, MgApi.cropSizeMultiplier(it.species, it.size)) }
     }
 
     Column(
@@ -836,7 +832,7 @@ private fun PetTile(pet: InventoryPetItem, apiReady: Boolean) {
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     pet.abilities.forEach { abilityId ->
                         val entry = remember(abilityId, apiReady) { MgApi.getAbilities()[abilityId] }
-                        val bg = remember(entry?.color) { parseAbilityBrush(entry?.color) }
+                        val bg = remember(abilityId, apiReady) { abilityBrush(abilityId) }
                         Box(
                             modifier = Modifier
                                 .size(8.dp)
@@ -939,57 +935,6 @@ private fun PetTileWithPrice(pet: InventoryPetItem, apiReady: Boolean, price: Lo
     }
 }
 
-/** Parse ability color string into a Brush (gradient or solid). Matches PetHungerCard. */
-private fun parseAbilityBrush(raw: String?): Brush {
-    if (raw == null) return SolidColor(Color(0xFF646464))
-    val hexPattern = Regex("#[0-9A-Fa-f]{6}")
-    val hexColors = hexPattern.findAll(raw).mapNotNull { match ->
-        try { Color(android.graphics.Color.parseColor(match.value)) } catch (_: Exception) { null }
-    }.toList()
-    if (hexColors.size >= 2 && raw.contains("gradient", ignoreCase = true)) {
-        return Brush.linearGradient(hexColors)
-    }
-    if (hexColors.isNotEmpty()) return SolidColor(hexColors.first())
-    return try { SolidColor(Color(android.graphics.Color.parseColor(raw))) } catch (_: Exception) { SolidColor(Color(0xFF646464)) }
-}
-
-private fun abilityColor(abilityId: String): Color {
-    val id = abilityId.lowercase().replace(Regex("[\\s_-]+"), "")
-    return when {
-        id.startsWith("moonkisser") -> Color(0xFFFAA623)
-        id.startsWith("dawnkisser") -> Color(0xFFA25CF2)
-        id.startsWith("producescaleboost") || id.startsWith("snowycropsizeboost") -> Color(0xFF228B22)
-        id.startsWith("plantgrowthboost") || id.startsWith("snowyplantgrowthboost") ||
-            id.startsWith("dawnplantgrowthboost") || id.startsWith("amberplantgrowthboost") -> Color(0xFF008080)
-        id.startsWith("egggrowthboost") || id.startsWith("snowyegggrowthboost") -> Color(0xFFB45AF0)
-        id.startsWith("petageboost") -> Color(0xFF9370DB)
-        id.startsWith("pethatchsizeboost") -> Color(0xFF800080)
-        id.startsWith("petxpboost") || id.startsWith("snowypetxpboost") -> Color(0xFF1E90FF)
-        id.startsWith("hungerboost") || id.startsWith("snowyhungerboost") -> Color(0xFFFF1493)
-        id.startsWith("hungerrestore") || id.startsWith("snowyhungerrestore") -> Color(0xFFFF69B4)
-        id.startsWith("sellboost") -> Color(0xFFDC143C)
-        id.startsWith("coinfinder") || id.startsWith("snowycoinfinder") -> Color(0xFFB49600)
-        id.startsWith("seedfinder") -> Color(0xFFA86626)
-        id.startsWith("producemutationboost") || id.startsWith("snowycropmutationboost") ||
-            id.startsWith("dawnboost") || id.startsWith("ambermoonboost") -> Color(0xFF8C0F46)
-        id.startsWith("petmutationboost") -> Color(0xFFA03264)
-        id.startsWith("doubleharvest") -> Color(0xFF0078B4)
-        id.startsWith("doublehatch") -> Color(0xFF3C5AB4)
-        id.startsWith("produceeater") -> Color(0xFFFF4500)
-        id.startsWith("producerefund") -> Color(0xFFFF6347)
-        id.startsWith("petrefund") -> Color(0xFF005078)
-        id.startsWith("copycat") -> Color(0xFFFF8C00)
-        id.startsWith("goldgranter") -> Color(0xFFE1C837)
-        id.startsWith("rainbowgranter") -> Color(0xFF50AAAA)
-        id.startsWith("raindance") -> Color(0xFF4CCCCC)
-        id.startsWith("snowgranter") -> Color(0xFF90B8CC)
-        id.startsWith("frostgranter") -> Color(0xFF94A0CC)
-        id.startsWith("dawnlitgranter") -> Color(0xFFC47CB4)
-        id.startsWith("amberlitgranter") -> Color(0xFFCC9060)
-        else -> Color(0xFF646464)
-    }
-}
-
 // ── Plant (unpot) dialog ──
 
 @Composable
@@ -1008,7 +953,7 @@ private fun PlantUnpotDialog(
     val maxScale = entry?.maxScale ?: 1.0
     val canPlant = freePlantTiles > 0
     val headerSlots = remember(plant.slots) {
-        plant.slots.map { PlantSlotRender(it.species, it.mutations, it.targetScale) }
+        plant.slots.map { PlantSlotRender(it.species, it.mutations, MgApi.cropSizeMultiplier(it.species, it.size)) }
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -1130,10 +1075,10 @@ private fun PlantSlotRow(
     maxScale: Double,
     apiReady: Boolean,
 ) {
-    val sizePercent = sizePercent(slot.targetScale, maxScale)
+    val sizePercent = slot.size.toDouble()
     val fraction = (sizePercent / 100.0).toFloat().coerceIn(0f, 1f)
-    val price = remember(slot.species, slot.targetScale, slot.mutations, apiReady) {
-        PriceCalculator.calculateCropSellPrice(slot.species, slot.targetScale, slot.mutations)
+    val price = remember(slot.species, slot.size, slot.mutations, apiReady) {
+        PriceCalculator.calculateCropSellPrice(slot.species, slot.size, slot.mutations)
     }
 
     Row(
@@ -1174,7 +1119,7 @@ private fun PlantSlotRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text("${sizePercent.toInt()}%", fontSize = 10.sp, color = TextSecondary, modifier = Modifier.width(28.dp))
+                Text("${sizePercent.toInt()}", fontSize = 10.sp, color = TextSecondary, modifier = Modifier.width(28.dp))
                 Box(modifier = Modifier.weight(1f)) {
                     Box(
                         modifier = Modifier.fillMaxWidth().height(4.dp)
@@ -1631,7 +1576,7 @@ private fun SellAllCropsDialog(
         produce.map { item ->
             val entry = MgApi.findItem(item.species)
             val name = entry?.name?.removeSuffix(" Seed") ?: item.species
-            val price = PriceCalculator.calculateCropSellPrice(item.species, item.scale, item.mutations, playerCount) ?: 0L
+            val price = PriceCalculator.calculateCropSellPrice(item.species, item.size, item.mutations, playerCount) ?: 0L
             Triple(item, name, price)
         }
     }
@@ -2114,7 +2059,7 @@ private fun PetDetailDialog(
                                 pet.abilities.forEach { abilityId ->
                                     val entry = remember(abilityId, apiReady) { MgApi.getAbilities()[abilityId] }
                                     val displayName = entry?.name ?: abilityId
-                                    val bg = remember(entry?.color) { parseAbilityBrush(entry?.color) }
+                                    val bg = remember(abilityId, apiReady) { abilityBrush(abilityId) }
                                     Text(
                                         displayName,
                                         fontSize = 10.sp,
@@ -2187,11 +2132,10 @@ private fun ProduceDetailDialog(
     val entry = remember(item.species, apiReady) { MgApi.findItem(item.species) }
     val name = entry?.name?.removeSuffix(" Seed") ?: item.species
     val color = rarityColor(entry?.rarity)
-    val maxS = entry?.maxScale ?: 1.0
-    val pct = sizePercent(item.scale, maxS)
+    val pct = item.size.toDouble()
     val fraction = (pct / 100.0).toFloat().coerceIn(0f, 1f)
-    val price = remember(item.species, item.scale, item.mutations, apiReady, playerCount) {
-        PriceCalculator.calculateCropSellPrice(item.species, item.scale, item.mutations, playerCount)
+    val price = remember(item.species, item.size, item.mutations, apiReady, playerCount) {
+        PriceCalculator.calculateCropSellPrice(item.species, item.size, item.mutations, playerCount)
     }
 
     var showConfirm by remember { mutableStateOf(false) }
@@ -2268,7 +2212,7 @@ private fun ProduceDetailDialog(
                     // Size
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Size", fontSize = 12.sp, color = TextSecondary)
-                        Text("${pct.toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                        Text("${pct.toInt()}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                     }
                     Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(color.copy(0.15f))) {
                         Box(Modifier.fillMaxWidth(fraction).height(4.dp).background(color.copy(0.8f)))

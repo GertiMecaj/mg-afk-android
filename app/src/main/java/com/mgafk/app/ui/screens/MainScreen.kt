@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.Pets
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ShoppingCart
+import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -58,6 +59,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import com.mgafk.app.data.repository.MgApi
 import com.mgafk.app.data.repository.PriceCalculator
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -74,7 +76,9 @@ import androidx.compose.ui.unit.sp
 import com.mgafk.app.data.model.AlertItem
 import com.mgafk.app.data.model.AlertMode
 import com.mgafk.app.data.model.AlertSection
+import com.mgafk.app.data.model.PlantPlacementMode
 import com.mgafk.app.data.model.REPLENISH_POTION_ID
+import com.mgafk.app.data.model.XP_POTION_ID
 import com.mgafk.app.data.model.Session
 import com.mgafk.app.data.model.SessionStatus
 import com.mgafk.app.ui.MainViewModel
@@ -89,8 +93,12 @@ import com.mgafk.app.ui.screens.room.ChatCard
 import com.mgafk.app.ui.screens.room.PlayersCard
 import com.mgafk.app.ui.screens.room.PopulateCard
 import com.mgafk.app.ui.screens.logs.AbilityLogsCard
+import com.mgafk.app.data.repository.Crystals
+import com.mgafk.app.ui.screens.garden.CrystalsCard
 import com.mgafk.app.ui.screens.garden.EggsCard
 import com.mgafk.app.ui.screens.garden.GardenCard
+import com.mgafk.app.ui.screens.garden.ManualPlantTarget
+import com.mgafk.app.ui.screens.garden.ManualPlantTileDialog
 import com.mgafk.app.ui.screens.storage.DecorShedCard
 import com.mgafk.app.ui.screens.storage.FeedingTroughCard
 import com.mgafk.app.ui.screens.storage.InventoryCard
@@ -100,7 +108,9 @@ import com.mgafk.app.ui.screens.storage.ToolShackCard
 import com.mgafk.app.ui.screens.pets.ActivePetsCard
 import com.mgafk.app.ui.screens.pets.PetTeamCard
 import com.mgafk.app.ui.screens.shops.ShopsCards
+import com.mgafk.app.ui.screens.nuclear.NuclearLogsCard
 import com.mgafk.app.ui.screens.status.LiveStatusCard
+import com.mgafk.app.ui.screens.status.WeatherStationCard
 import com.mgafk.app.ui.theme.Accent
 import com.mgafk.app.ui.theme.BgDark
 import com.mgafk.app.ui.theme.StatusConnected
@@ -132,6 +142,7 @@ enum class NavSection(
     STORAGE("Storage", Icons.Outlined.Inventory2, requiresConnection = true),
     GARDEN("Garden", Icons.Outlined.Grass, requiresConnection = true),
     SHOPS("Shops", Icons.Outlined.ShoppingCart, requiresConnection = true),
+    NUCLEAR("Nuclear", Icons.Outlined.Science),
     SOCIAL("Social", Icons.Outlined.People),
     ALERTS("Alerts", Icons.Outlined.Notifications),
     SETTINGS("Settings", Icons.Outlined.Settings),
@@ -414,6 +425,14 @@ private fun DrawerContent(
                 }
         }
 
+        DrawerItem(
+            icon = NavSection.NUCLEAR.icon,
+            label = NavSection.NUCLEAR.label,
+            selected = selected == NavSection.NUCLEAR,
+            enabled = true,
+            onClick = { onSelect(NavSection.NUCLEAR) },
+        )
+
         // Mini Games, Alerts, Settings & Debug - pinned at bottom
         HorizontalDivider(color = SurfaceBorder, thickness = 1.dp)
         Spacer(modifier = Modifier.height(4.dp))
@@ -564,6 +583,7 @@ private fun SectionContent(
             )
 
             LiveStatusCard(session = session)
+            WeatherStationCard(forecast = state.weatherForecast)
 
             // ── Remove session ──
             RemoveSessionButton(
@@ -626,6 +646,19 @@ private fun SectionContent(
                 instantHatch = state.settings.instantHatch,
                 onDismissHatchedPet = { viewModel.clearHatchedPet(session.id) },
             )
+            CrystalsCard(
+                crystals = session.crystals,
+                tools = session.inventory.tools,
+                connected = session.status == SessionStatus.CONNECTED,
+                crystalsReadAtMs = session.crystalsReadAtMs,
+                occupiedTiles = session.occupiedTiles,
+                apiReady = state.apiReady,
+                onPlant = { type, ref ->
+                    viewModel.placeCrystal(session.id, type, ref.tileType, ref.index)
+                },
+                onFuse = { crystal -> viewModel.fuseCrystal(session.id, crystal) },
+                onPickup = { crystal -> viewModel.pickupCrystal(session.id, crystal) },
+            )
         }
         NavSection.PETS -> {
             ActivePetsCard(
@@ -640,11 +673,19 @@ private fun SectionContent(
                     .find { it.toolId == REPLENISH_POTION_ID }?.quantity ?: 0,
                 potionsInShack = session.toolShack
                     .find { it.toolId == REPLENISH_POTION_ID }?.quantity ?: 0,
+                xpPotionsInInventory = session.inventory.tools
+                    .find { it.toolId == XP_POTION_ID }?.quantity ?: 0,
+                xpPotionsInShack = session.toolShack
+                    .find { it.toolId == XP_POTION_ID }?.quantity ?: 0,
+                strengthBonus = Crystals.effects(session.crystals).strengthBonus,
                 onFeedPet = { petItemId, cropItemIds ->
                     viewModel.feedPet(session.id, petItemId, cropItemIds)
                 },
                 onUsePotionOnPet = { petItemId ->
                     viewModel.useReplenishPotionOnPet(session.id, petItemId)
+                },
+                onUseXpPotionOnPet = { petItemId ->
+                    viewModel.useXpPotionOnPet(session.id, petItemId)
                 },
                 onSwapPet = { activePetId, targetPetId, isInHutch ->
                     viewModel.swapPet(session.id, activePetId, targetPetId, isInHutch)
@@ -665,8 +706,11 @@ private fun SectionContent(
                     viewModel.detectActiveTeamId(session.id)
                 },
                 apiReady = state.apiReady,
-                onCreate = { team -> viewModel.createPetTeam(session.id, team) },
-                onUpdate = { team -> viewModel.updatePetTeam(session.id, team) },
+                strengthBonus = Crystals.effects(session.crystals).strengthBonus,
+                onCreate = { name, petIds -> viewModel.createPetTeam(session.id, name, petIds) },
+                onUpdate = { teamId, name, petIds ->
+                    viewModel.updatePetTeam(session.id, teamId, name, petIds)
+                },
                 onDelete = { teamId -> viewModel.deletePetTeam(session.id, teamId) },
                 onReorder = { from, to -> viewModel.reorderPetTeams(session.id, from, to) },
                 onActivate = { team -> viewModel.activateTeam(session.id, team) },
@@ -687,6 +731,9 @@ private fun SectionContent(
                 onBuy = { shopType, itemName -> viewModel.purchaseShopItem(session.id, shopType, itemName) },
                 onBuyAll = { shopType, itemName -> viewModel.purchaseAllShopItem(session.id, shopType, itemName) },
             )
+        }
+        NavSection.NUCLEAR -> {
+            NuclearLogsCard()
         }
         NavSection.STORAGE -> {
             SectionTip(
@@ -711,6 +758,12 @@ private fun SectionContent(
             val seedSiloSpecies = remember(session.seedSilo) { session.seedSilo.map { it.species }.toSet() }
             val decorShedIds = remember(session.decorShed) { session.decorShed.map { it.decorId }.toSet() }
             val toolShackToolIds = remember(session.toolShack) { session.toolShack.map { it.toolId }.toSet() }
+            // Manual planting can either drop on the first free tile or ask the player to point
+            // at one on the garden grid (see PlantPlacementMode). Nothing is remembered either
+            // way - this is a one-shot placement, not auto-plant.
+            val plantOnGrid = state.settings.plantPlacementMode == PlantPlacementMode.GRID
+            var manualPlantTarget by remember { mutableStateOf<ManualPlantTarget?>(null) }
+
             val invSeedSpecies = remember(inv.seeds) { inv.seeds.map { it.species }.toSet() }
             val invDecorIds = remember(inv.decors) { inv.decors.map { it.decorId }.toSet() }
             val invToolIds = remember(inv.tools) { inv.tools.map { it.toolId }.toSet() }
@@ -735,9 +788,15 @@ private fun SectionContent(
                 toolShackCount = session.toolShack.size,
                 toolShackMax = toolShackMax,
                 toolShackToolIds = toolShackToolIds,
-                onPlantSeed = { species -> viewModel.plantSeed(session.id, species) },
+                onPlantSeed = { species ->
+                    if (plantOnGrid) manualPlantTarget = ManualPlantTarget.Seed(species)
+                    else viewModel.plantSeed(session.id, species)
+                },
                 onGrowEgg = { eggId -> viewModel.growEgg(session.id, eggId) },
-                onPlantGardenPlant = { itemId -> viewModel.plantGardenPlant(session.id, itemId) },
+                onPlantGardenPlant = { itemId ->
+                    if (plantOnGrid) manualPlantTarget = ManualPlantTarget.Pot(itemId)
+                    else viewModel.plantGardenPlant(session.id, itemId)
+                },
                 onToggleLock = { itemId -> viewModel.toggleLockItem(session.id, itemId) },
                 onSellPet = { itemId -> viewModel.sellPet(session.id, itemId) },
                 onSellAllUnlockedPets = { itemIds -> viewModel.sellAllUnlockedPets(session.id, itemIds) },
@@ -749,6 +808,47 @@ private fun SectionContent(
                 onMoveToolToShack = { toolId -> viewModel.moveToolToShack(session.id, toolId) },
                 playerCount = session.players,
             )
+
+            when (val target = manualPlantTarget) {
+                null -> Unit
+                is ManualPlantTarget.Seed -> {
+                    val entry = MgApi.findItem(target.species)
+                    ManualPlantTileDialog(
+                        species = target.species,
+                        displayName = entry?.name ?: target.species,
+                        spriteUrl = entry?.sprite,
+                        // Falls to 0 as the optimistic update empties the stack, closing the popup.
+                        remaining = inv.seeds.find { it.species == target.species }?.quantity ?: 0,
+                        garden = session.garden,
+                        gardenEggs = session.gardenEggs,
+                        // This build does not track garden decor, so decor tiles read as free
+                        // here and the server is what refuses one.
+                        decorSpriteByTile = emptyMap(),
+                        onPlantTile = { tileId ->
+                            viewModel.plantSeed(session.id, target.species, tileId)
+                        },
+                        onDismiss = { manualPlantTarget = null },
+                    )
+                }
+                is ManualPlantTarget.Pot -> {
+                    val pot = inv.plants.find { it.id == target.itemId }
+                    val entry = pot?.let { MgApi.findItem(it.species) }
+                    ManualPlantTileDialog(
+                        species = null,
+                        displayName = entry?.name ?: pot?.species.orEmpty(),
+                        spriteUrl = entry?.cropSprite ?: entry?.sprite,
+                        remaining = if (pot != null) 1 else 0,
+                        garden = session.garden,
+                        gardenEggs = session.gardenEggs,
+                        decorSpriteByTile = emptyMap(),
+                        onPlantTile = { tileId ->
+                            viewModel.plantGardenPlant(session.id, target.itemId, tileId)
+                        },
+                        onDismiss = { manualPlantTarget = null },
+                    )
+                }
+            }
+
             if (hasSeedSilo) {
                 SeedSiloCard(seeds = session.seedSilo, apiReady = state.apiReady, favoritedItemIds = session.favoritedItemIds,
                     inventorySeedSpecies = invSeedSpecies,

@@ -1,11 +1,17 @@
 package com.mgafk.app.data.websocket
 
 import com.mgafk.app.data.AppLog
+import com.mgafk.app.data.NuclearLogKind
+import com.mgafk.app.data.NuclearLogStore
 import com.mgafk.app.data.model.AbilityLog
 import com.mgafk.app.data.model.ChatMessage
+import com.mgafk.app.data.model.GardenTileRef
+import com.mgafk.app.data.model.PetTeam
+import com.mgafk.app.data.model.PlacedCrystal
 import com.mgafk.app.data.model.PlayerSnapshot
 import com.mgafk.app.data.model.ReconnectConfig
 import com.mgafk.app.data.model.SessionStatus
+import com.mgafk.app.data.repository.CrystalParser
 import com.mgafk.app.data.websocket.state.GameState
 import com.mgafk.app.data.websocket.state.GardenTile
 import com.mgafk.app.data.websocket.state.PetInfo
@@ -66,7 +72,20 @@ sealed class ClientEvent {
 
     data class ShopsChanged(val shops: List<ShopModel>, val shopPurchases: JsonObject? = null) : ClientEvent()
     data class GardenChanged(val plants: List<GardenTile>) : ClientEvent()
+
+    /**
+     * Crystals standing in the garden, with every occupied tile of both maps.
+     *
+     * Separate from [GardenChanged] on purpose: a crystal is not a plant, so planting or
+     * picking one up leaves the plant list untouched and would never be reported. Keeping it
+     * apart also means a crystal burning down does not wake the auto-harvest pipeline.
+     */
+    data class CrystalsChanged(
+        val crystals: List<PlacedCrystal>,
+        val occupiedTiles: Set<GardenTileRef>,
+    ) : ClientEvent()
     data class EggsChanged(val eggs: List<GardenTile>) : ClientEvent()
+    data class PetTeamsChanged(val teams: List<PetTeam>) : ClientEvent()
     data class InventoryChanged(val items: JsonArray, val storages: JsonArray, val favoritedItemIds: List<String> = emptyList(), val magicDust: Double = 0.0) : ClientEvent()
     data class ChatChanged(val messages: List<ChatMessage>) : ClientEvent()
     data class PlayersListChanged(val players: List<PlayerSnapshot>) : ClientEvent()
@@ -93,6 +112,12 @@ internal fun normalizeIncomingMessage(msg: JsonObject): JsonObject {
 class RoomClient {
     companion object {
         private const val TAG = "RoomClient"
+
+        /**
+         * Sent the moment the socket opens. The server waits for it to admit the connection and
+         * closes the socket after ten seconds without it.
+         */
+        private const val SOCKET_OPENED = """{"type":"SocketOpened"}"""
 
         /**
          * Player fields that only carry a value once the server has accepted our
@@ -146,8 +171,10 @@ class RoomClient {
     private var lastLivePayload: ClientEvent.LiveStatusChanged? = null
     private var lastShopsPayload: ClientEvent.ShopsChanged? = null
     private var lastGardenPayload: ClientEvent.GardenChanged? = null
+    private var lastCrystalsPayload: ClientEvent.CrystalsChanged? = null
     private var lastEggsPayload: ClientEvent.EggsChanged? = null
     private var lastInventoryPayload: ClientEvent.InventoryChanged? = null
+    private var lastPetTeamsPayload: ClientEvent.PetTeamsChanged? = null
     private var lastAbilityTimestamp = 0L
     private var lastChatSize = -1
     private var lastPlayersPayload: ClientEvent.PlayersListChanged? = null
@@ -239,8 +266,10 @@ class RoomClient {
         this.lastLivePayload = null
         this.lastShopsPayload = null
         this.lastGardenPayload = null
+        this.lastCrystalsPayload = null
         this.lastEggsPayload = null
         this.lastInventoryPayload = null
+        this.lastPetTeamsPayload = null
         gameState.reset()
         commandSequencer.reset()
 
@@ -269,6 +298,11 @@ class RoomClient {
             ),
         )
         AppLog.d(TAG, "connect() url=$url isRetry=$isRetry retryCount=$retryCount")
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "connect",
+            "host=$host version=$version room=$room retry=$isRetry retryCount=$retryCount attempt=$connectionAttempt",
+        )
 
         state = "connecting"
         emitStatus(SessionStatus.CONNECTING)
@@ -293,6 +327,11 @@ class RoomClient {
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                NuclearLogStore.record(
+                    NuclearLogKind.CONNECTION,
+                    "socket_closing",
+                    "code=$code reason=$reason",
+                )
                 webSocket.close(1000, null)
             }
 
@@ -311,6 +350,11 @@ class RoomClient {
     }
 
     fun disconnect() {
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "disconnect",
+            "manual=true room=$room player=$playerId",
+        )
         state = "disconnected"
         connectedAt = 0
         welcomed = false
@@ -336,13 +380,34 @@ class RoomClient {
 
     // ---- Internal handlers ----
 
+    /**
+     * Announces the socket, then says nothing more until the server's Welcome.
+     *
+     * The server only admits a connection once it has seen [SOCKET_OPENED], and drops it after a
+     * ten second admission timeout otherwise. Game messages sent before Welcome go into a socket
+     * that is not admitted yet, so the two this used to send on open now wait for the Welcome
+     * (see [sendPostWelcomeHandshake]).
+     */
     private fun handleOpen() {
-        AppLog.d(TAG, "onOpen, sending handshake")
+        AppLog.d(TAG, "onOpen, announcing the socket")
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "socket_open",
+            "room=$room host=$host",
+        )
+        send(SOCKET_OPENED)
+    }
+
+    /** The game messages that may only go out once the server has admitted the socket. */
+    private fun sendPostWelcomeHandshake() {
+        AppLog.d(TAG, "welcomed, sending handshake")
         actions.voteForGame()
         actions.setSelectedGame()
     }
 
     private fun handleMessage(raw: String) {
+        NuclearLogStore.record(NuclearLogKind.WS_IN, "raw", raw)
+
         if (raw == "ping" || raw == "\"ping\"") {
             send("pong")
             return
@@ -350,7 +415,12 @@ class RoomClient {
 
         val msg: JsonObject = try {
             normalizeIncomingMessage(json.parseToJsonElement(raw).jsonObject)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            NuclearLogStore.record(
+                NuclearLogKind.PARSER,
+                "incoming_parse_error",
+                "${e::class.simpleName}: ${e.message}\n$raw",
+            )
             return
         }
 
@@ -409,6 +479,11 @@ class RoomClient {
 
         // Delegate full state handling to GameState
         gameState.handleMessage(msg)
+        NuclearLogStore.record(
+            NuclearLogKind.STATE,
+            "welcome_applied",
+            "room=$room player=$playerId players=${players?.size ?: 0}",
+        )
 
         // Set lastAbilityTimestamp to the latest existing log so we don't re-emit old ones
         val myPlayer = gameState.getPlayer(playerId)
@@ -420,13 +495,16 @@ class RoomClient {
         emitLiveStatus()
         emitShops()
         emitGarden()
+        emitCrystals()
         emitEggs()
         emitInventory()
+        emitPetTeams()
         emitChat()
         emitPlayersList()
 
         if (!welcomed) {
             welcomed = true
+            sendPostWelcomeHandshake()
             connectedAt = System.currentTimeMillis()
             state = "connected"
             val wasRetry = retryCount > 0
@@ -463,6 +541,11 @@ class RoomClient {
 
     private fun handlePartialState(msg: JsonObject) {
         val patches = msg["patches"] as? JsonArray
+        NuclearLogStore.record(
+            NuclearLogKind.STATE,
+            "partial_state",
+            "patches=${patches?.size ?: 0}",
+        )
 
         // Check if any patch touches our player's activityLogs
         val userSlotIndex = gameState.findUserSlotIndex(playerId)
@@ -481,8 +564,10 @@ class RoomClient {
         emitLiveStatus()
         emitShops()
         emitGarden()
+        emitCrystals()
         emitEggs()
         emitInventory()
+        emitPetTeams()
         emitChat()
         emitPlayersList()
     }
@@ -590,6 +675,11 @@ class RoomClient {
 
     private fun handleClose(code: Int, reason: String) {
         AppLog.w(TAG, "onClose code=$code reason=$reason manualClose=$manualClose")
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "socket_closed",
+            "code=$code reason=$reason manual=$manualClose room=$room player=$playerId",
+        )
         lastCloseCode = code
         state = "disconnected"
         connectedAt = 0
@@ -611,6 +701,11 @@ class RoomClient {
     private fun handleError(throwable: Throwable) {
         val msg = throwable.message ?: throwable.toString()
         AppLog.e(TAG, "onError: $msg", throwable)
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "socket_failure",
+            "${throwable::class.simpleName}: $msg",
+        )
         emit(ClientEvent.DebugLog("error", "ws error", msg))
         handleClose(1006, msg)
     }
@@ -823,6 +918,27 @@ class RoomClient {
         emit(payload)
     }
 
+    private fun emitCrystals() {
+        val me = gameState.getPlayer(playerId) ?: return
+        val dirt = me.getGardenTiles()
+        val boardwalk = me.getBoardwalkTiles()
+        val payload = ClientEvent.CrystalsChanged(
+            crystals = CrystalParser.parse(dirt, boardwalk),
+            occupiedTiles = CrystalParser.occupiedTiles(dirt, boardwalk),
+        )
+        if (payload == lastCrystalsPayload) return
+        lastCrystalsPayload = payload
+        emit(payload)
+    }
+
+    private fun emitPetTeams() {
+        val me = gameState.getPlayer(playerId) ?: return
+        val payload = ClientEvent.PetTeamsChanged(PetTeam.listFromJson(me.petTeams))
+        if (payload == lastPetTeamsPayload) return
+        lastPetTeamsPayload = payload
+        emit(payload)
+    }
+
     private fun emitInventory() {
         val me = gameState.getPlayer(playerId) ?: return
         val payload = ClientEvent.InventoryChanged(me.inventory, me.storages, me.favoritedItemIds, me.magicDust)
@@ -898,6 +1014,14 @@ class RoomClient {
     }
 
     private fun send(text: String) {
-        webSocket?.send(text)
+        NuclearLogStore.record(NuclearLogKind.WS_OUT, "raw", text)
+        val queued = webSocket?.send(text) ?: false
+        if (!queued) {
+            NuclearLogStore.record(
+                NuclearLogKind.CONNECTION,
+                "send_not_queued",
+                "socket unavailable or rejected by OkHttp queue",
+            )
+        }
     }
 }
