@@ -1,6 +1,8 @@
 package com.mgafk.app.data.websocket
 
 import com.mgafk.app.data.AppLog
+import com.mgafk.app.data.NuclearLogKind
+import com.mgafk.app.data.NuclearLogStore
 import com.mgafk.app.data.model.AbilityLog
 import com.mgafk.app.data.model.ChatMessage
 import com.mgafk.app.data.model.GardenTileRef
@@ -296,6 +298,11 @@ class RoomClient {
             ),
         )
         AppLog.d(TAG, "connect() url=$url isRetry=$isRetry retryCount=$retryCount")
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "connect",
+            "host=$host version=$version room=$room retry=$isRetry retryCount=$retryCount attempt=$connectionAttempt",
+        )
 
         state = "connecting"
         emitStatus(SessionStatus.CONNECTING)
@@ -320,6 +327,11 @@ class RoomClient {
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                NuclearLogStore.record(
+                    NuclearLogKind.CONNECTION,
+                    "socket_closing",
+                    "code=$code reason=$reason",
+                )
                 webSocket.close(1000, null)
             }
 
@@ -338,6 +350,11 @@ class RoomClient {
     }
 
     fun disconnect() {
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "disconnect",
+            "manual=true room=$room player=$playerId",
+        )
         state = "disconnected"
         connectedAt = 0
         welcomed = false
@@ -373,6 +390,11 @@ class RoomClient {
      */
     private fun handleOpen() {
         AppLog.d(TAG, "onOpen, announcing the socket")
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "socket_open",
+            "room=$room host=$host",
+        )
         send(SOCKET_OPENED)
     }
 
@@ -384,6 +406,8 @@ class RoomClient {
     }
 
     private fun handleMessage(raw: String) {
+        NuclearLogStore.record(NuclearLogKind.WS_IN, "raw", raw)
+
         if (raw == "ping" || raw == "\"ping\"") {
             send("pong")
             return
@@ -391,7 +415,12 @@ class RoomClient {
 
         val msg: JsonObject = try {
             normalizeIncomingMessage(json.parseToJsonElement(raw).jsonObject)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            NuclearLogStore.record(
+                NuclearLogKind.PARSER,
+                "incoming_parse_error",
+                "${e::class.simpleName}: ${e.message}\n$raw",
+            )
             return
         }
 
@@ -450,6 +479,11 @@ class RoomClient {
 
         // Delegate full state handling to GameState
         gameState.handleMessage(msg)
+        NuclearLogStore.record(
+            NuclearLogKind.STATE,
+            "welcome_applied",
+            "room=$room player=$playerId players=${players?.size ?: 0}",
+        )
 
         // Set lastAbilityTimestamp to the latest existing log so we don't re-emit old ones
         val myPlayer = gameState.getPlayer(playerId)
@@ -507,6 +541,11 @@ class RoomClient {
 
     private fun handlePartialState(msg: JsonObject) {
         val patches = msg["patches"] as? JsonArray
+        NuclearLogStore.record(
+            NuclearLogKind.STATE,
+            "partial_state",
+            "patches=${patches?.size ?: 0}",
+        )
 
         // Check if any patch touches our player's activityLogs
         val userSlotIndex = gameState.findUserSlotIndex(playerId)
@@ -636,6 +675,11 @@ class RoomClient {
 
     private fun handleClose(code: Int, reason: String) {
         AppLog.w(TAG, "onClose code=$code reason=$reason manualClose=$manualClose")
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "socket_closed",
+            "code=$code reason=$reason manual=$manualClose room=$room player=$playerId",
+        )
         lastCloseCode = code
         state = "disconnected"
         connectedAt = 0
@@ -657,6 +701,11 @@ class RoomClient {
     private fun handleError(throwable: Throwable) {
         val msg = throwable.message ?: throwable.toString()
         AppLog.e(TAG, "onError: $msg", throwable)
+        NuclearLogStore.record(
+            NuclearLogKind.CONNECTION,
+            "socket_failure",
+            "${throwable::class.simpleName}: $msg",
+        )
         emit(ClientEvent.DebugLog("error", "ws error", msg))
         handleClose(1006, msg)
     }
@@ -965,6 +1014,14 @@ class RoomClient {
     }
 
     private fun send(text: String) {
-        webSocket?.send(text)
+        NuclearLogStore.record(NuclearLogKind.WS_OUT, "raw", text)
+        val queued = webSocket?.send(text) ?: false
+        if (!queued) {
+            NuclearLogStore.record(
+                NuclearLogKind.CONNECTION,
+                "send_not_queued",
+                "socket unavailable or rejected by OkHttp queue",
+            )
+        }
     }
 }
