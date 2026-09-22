@@ -13,6 +13,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -53,14 +54,23 @@ object MgApi {
         val rarity: String? = null,
         val cropSprite: String? = null,
         val maxScale: Double? = null,
+        /** Crops only: what a size-100 crop multiplies base value and weight by (V30+).
+         * Pets keep [maxScale]; the two are not interchangeable. */
+        val maxSizeMultiplier: Double? = null,
         val baseSellPrice: Double? = null,
         val hoursToMature: Double? = null,
         val maturitySellPrice: Double? = null,
         val color: String? = null,
+        // Ability-only: the gradient a couple of them are drawn with, instead of [color].
+        val abilityGradient: AbilityGradient? = null,
         val diet: List<String> = emptyList(),
         // Plant-only visual data (from `/data/plants`)
         val plantSprite: String? = null,
         val plantSlotOffsets: List<SlotOffset> = emptyList(),
+        // Patch-style plants (e.g. Clover): explicit max grow-slot count, separate from
+        // plantSlotOffsets - these have no slotOffsets at all (a single PlantSeed fills a
+        // random subset of the capacity, between slotCountMin/slotCountMax).
+        val plantSlotCapacity: Int? = null,
         val plantBaseTileScale: Double? = null,
         val plantTileTransformOrigin: String? = null,
         val cropBaseTileScale: Double? = null,
@@ -82,6 +92,45 @@ object MgApi {
         val eligibleShops: List<String> = emptyList(),
     ) {
         val rarityIndex: Int get() = RARITY_ORDER.indexOf(rarity).let { if (it < 0) RARITY_ORDER.size else it }
+
+        /** Max simultaneous grow slots for this plant: explicit [plantSlotCapacity] (patch-style
+         * plants like Clover) if present, else the length of [plantSlotOffsets] (tree-style
+         * multi-crop plants like FavaBean), else 1 for an ordinary single-harvest plant. */
+        val plantMaxGrowSlots: Int
+            get() = plantSlotCapacity ?: plantSlotOffsets.size.takeIf { it > 0 } ?: 1
+    }
+
+    /** One colour stop of an ability's gradient: where it sits (0..1) and what it paints. */
+    data class GradientStop(val offset: Double, val color: String)
+
+    /**
+     * The gradient a couple of abilities are drawn with (Rainbow Granter, Gold Granter), as the
+     * API sends it. Abilities without one are a single [GameEntry.color].
+     */
+    data class AbilityGradient(val angleDegrees: Double, val stops: List<GradientStop>)
+
+    /**
+     * Reads an ability's `gradient` block, or null when it has none or holds too few stops to
+     * be one.
+     */
+    fun parseAbilityGradient(obj: JsonObject?): AbilityGradient? {
+        val gradient = obj?.get("gradient") as? JsonObject ?: return null
+        val stops = (gradient["colorStops"] as? JsonArray)
+            ?.mapNotNull { element ->
+                val stop = element as? JsonObject ?: return@mapNotNull null
+                val color = stop["color"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                GradientStop(
+                    offset = stop["offset"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    color = color,
+                )
+            }
+            ?.sortedBy { it.offset }
+            .orEmpty()
+        if (stops.size < 2) return null
+        return AbilityGradient(
+            angleDegrees = gradient["angleDegrees"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            stops = stops,
+        )
     }
 
     /** Normalized slot offset from the plant data (x/y in tile units, rotation in degrees). */
@@ -208,12 +257,24 @@ object MgApi {
     fun uiSpriteUrl(name: String): String = spriteUrl("ui", name)
 
     /** URL for a plant sprite (e.g. "Carrot", "Starweaver"). */
+    /**
+     * What a crop of [species] at [size] multiplies its base value, weight and drawn size by.
+     *
+     * 1.0 for an unknown species, so a crop the API has no data for renders at its base size
+     * instead of vanishing.
+     */
+    fun cropSizeMultiplier(species: String, size: Int): Double =
+        CropSize.multiplier(size, getPlants()[species]?.maxSizeMultiplier ?: 1.0)
+
     fun plantSpriteUrl(name: String): String = spriteUrl("plants", name)
 
     val coinBagUrl: String get() = uiSpriteUrl("CoinBag")
     val lockSpriteUrl: String get() = uiSpriteUrl("Locked")
     val unlockSpriteUrl: String get() = uiSpriteUrl("Unlocked")
     val magicDustUrl: String get() = spriteUrl("items", "MagicDust")
+
+    /** Badge for a crop preserved at the Preservation Station. */
+    val preservationSpriteUrl: String get() = uiSpriteUrl("PreservationIcon")
 
     /** URL for a rarity tier's badge sprite (e.g. "Common", "Divine"). */
     fun raritySpriteUrl(rarity: String): String = uiSpriteUrl("Rarity$rarity")
@@ -438,10 +499,11 @@ object MgApi {
                     sprite = seedObj?.get("sprite")?.jsonPrimitive?.contentOrNull,
                     rarity = seedObj?.get("rarity")?.jsonPrimitive?.contentOrNull,
                     cropSprite = cropObj?.get("sprite")?.jsonPrimitive?.contentOrNull,
-                    maxScale = cropObj?.get("maxScale")?.jsonPrimitive?.doubleOrNull,
+                    maxSizeMultiplier = cropObj?.get("maxSizeMultiplier")?.jsonPrimitive?.doubleOrNull,
                     baseSellPrice = cropObj?.get("baseSellPrice")?.jsonPrimitive?.doubleOrNull,
                     plantSprite = plantObj?.get("sprite")?.jsonPrimitive?.contentOrNull,
                     plantSlotOffsets = slotOffsets,
+                    plantSlotCapacity = plantObj?.get("slotCapacity")?.jsonPrimitive?.intOrNull,
                     plantBaseTileScale = plantObj?.get("baseTileScale")?.jsonPrimitive?.doubleOrNull,
                     plantTileTransformOrigin = plantObj?.get("tileTransformOrigin")?.jsonPrimitive?.contentOrNull,
                     cropBaseTileScale = cropObj?.get("baseTileScale")?.jsonPrimitive?.doubleOrNull,
@@ -480,6 +542,7 @@ object MgApi {
                     hoursToMature = obj?.get("hoursToMature")?.jsonPrimitive?.doubleOrNull,
                     maturitySellPrice = obj?.get("maturitySellPrice")?.jsonPrimitive?.doubleOrNull,
                     color = obj?.get("color")?.jsonPrimitive?.contentOrNull,
+                    abilityGradient = if (category == "abilities") parseAbilityGradient(obj) else null,
                     diet = dietArray,
                     faunaSpawnWeights = faunaWeights,
                     upgrades = upgrades,

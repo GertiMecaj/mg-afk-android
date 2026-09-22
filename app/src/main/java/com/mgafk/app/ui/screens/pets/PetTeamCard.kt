@@ -62,7 +62,10 @@ import androidx.compose.ui.zIndex
 import com.mgafk.app.data.model.InventoryPetItem
 import com.mgafk.app.data.model.PetSnapshot
 import com.mgafk.app.data.model.PetTeam
+import com.mgafk.app.data.model.PetTeamEmblem
 import com.mgafk.app.data.repository.MgApi
+import com.mgafk.app.ui.components.abilityBrush
+import com.mgafk.app.ui.components.abilityColor
 import com.mgafk.app.ui.components.AppCard
 import com.mgafk.app.ui.components.SpriteImage
 import com.mgafk.app.ui.theme.Accent
@@ -115,43 +118,6 @@ private fun curStr(sp: String, xp: Double, max: Int): Int {
     return ((max - S_GAIN) + minOf(S_GAIN / htm * (xp / XP_H), S_GAIN.toDouble())).toInt()
 }
 
-private fun abilityColor(abilityId: String): Color {
-    val id = abilityId.lowercase().replace(Regex("[\\s_-]+"), "")
-    return when {
-        id.startsWith("moonkisser") -> Color(0xFFFAA623)
-        id.startsWith("dawnkisser") -> Color(0xFFA25CF2)
-        id.startsWith("producescaleboost") || id.startsWith("snowycropsizeboost") -> Color(0xFF228B22)
-        id.startsWith("plantgrowthboost") || id.startsWith("snowyplantgrowthboost") ||
-            id.startsWith("dawnplantgrowthboost") || id.startsWith("amberplantgrowthboost") -> Color(0xFF008080)
-        id.startsWith("egggrowthboost") || id.startsWith("snowyegggrowthboost") -> Color(0xFFB45AF0)
-        id.startsWith("petageboost") -> Color(0xFF9370DB)
-        id.startsWith("pethatchsizeboost") -> Color(0xFF800080)
-        id.startsWith("petxpboost") || id.startsWith("snowypetxpboost") -> Color(0xFF1E90FF)
-        id.startsWith("hungerboost") || id.startsWith("snowyhungerboost") -> Color(0xFFFF1493)
-        id.startsWith("hungerrestore") || id.startsWith("snowyhungerrestore") -> Color(0xFFFF69B4)
-        id.startsWith("sellboost") -> Color(0xFFDC143C)
-        id.startsWith("coinfinder") || id.startsWith("snowycoinfinder") -> Color(0xFFB49600)
-        id.startsWith("seedfinder") -> Color(0xFFA86626)
-        id.startsWith("producemutationboost") || id.startsWith("snowycropmutationboost") ||
-            id.startsWith("dawnboost") || id.startsWith("ambermoonboost") -> Color(0xFF8C0F46)
-        id.startsWith("petmutationboost") -> Color(0xFFA03264)
-        id.startsWith("doubleharvest") -> Color(0xFF0078B4)
-        id.startsWith("doublehatch") -> Color(0xFF3C5AB4)
-        id.startsWith("produceeater") -> Color(0xFFFF4500)
-        id.startsWith("producerefund") -> Color(0xFFFF6347)
-        id.startsWith("petrefund") -> Color(0xFF005078)
-        id.startsWith("copycat") -> Color(0xFFFF8C00)
-        id.startsWith("goldgranter") -> Color(0xFFE1C837)
-        id.startsWith("rainbowgranter") -> Color(0xFF50AAAA)
-        id.startsWith("raindance") -> Color(0xFF4CCCCC)
-        id.startsWith("snowgranter") -> Color(0xFF90B8CC)
-        id.startsWith("frostgranter") -> Color(0xFF94A0CC)
-        id.startsWith("dawnlitgranter") -> Color(0xFFC47CB4)
-        id.startsWith("amberlitgranter") -> Color(0xFFCC9060)
-        else -> Color(0xFF646464)
-    }
-}
-
 /** Unified pet candidate for the team editor picker. */
 data class TeamPetCandidate(
     val id: String,
@@ -175,8 +141,10 @@ fun PetTeamCard(
     hutchPets: List<InventoryPetItem>,
     activeTeamId: String?,
     apiReady: Boolean,
-    onCreate: (PetTeam) -> Unit,
-    onUpdate: (PetTeam) -> Unit,
+    /** Flat strength a Strength crystal is granting, which reaches equipped pets only. */
+    strengthBonus: Int = 0,
+    onCreate: (name: String, petIds: List<String>) -> Unit,
+    onUpdate: (teamId: String, name: String, petIds: List<String>) -> Unit,
     onDelete: (teamId: String) -> Unit,
     onReorder: (fromIndex: Int, toIndex: Int) -> Unit,
     onActivate: (PetTeam) -> Unit,
@@ -192,9 +160,15 @@ fun PetTeamCard(
     val mutationsByPetId = remember(allCandidates) {
         allCandidates.associate { it.id to it.mutations }
     }
+    // A Strength crystal only reaches the pets that are actually equipped, so a team sitting in
+    // the hutch shows its pets' own strength.
+    val strengthBonusByPetId = remember(activePets, strengthBonus) {
+        if (strengthBonus <= 0) emptyMap() else activePets.associate { it.id to strengthBonus }
+    }
 
     var editorTeam by remember { mutableStateOf<PetTeam?>(null) }
     var editorIsNew by remember { mutableStateOf(false) }
+    var editorOpen by remember { mutableStateOf(false) }
 
     // Drag state
     var dragIndex by remember { mutableIntStateOf(-1) }
@@ -243,8 +217,9 @@ fun PetTeamCard(
 
         if (teams.isEmpty()) {
             AddTeamTile {
-                editorTeam = PetTeam()
+                editorTeam = null
                 editorIsNew = true
+                editorOpen = true
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -274,6 +249,7 @@ fun PetTeamCard(
                             onEdit = {
                                 editorTeam = team
                                 editorIsNew = false
+                                editorOpen = true
                             },
                             onDelete = { onDelete(team.id) },
                             dragModifier = Modifier.pointerInput(teams.size) {
@@ -311,25 +287,37 @@ fun PetTeamCard(
                 }
                 if (teams.size < PetTeam.MAX_TEAMS) {
                     AddTeamTile {
-                        editorTeam = PetTeam()
+                        editorTeam = null
                         editorIsNew = true
+                        editorOpen = true
                     }
+                } else {
+                    // The server refuses a 26th team, so say why instead of offering the tile.
+                    Text(
+                        "Team limit reached (${PetTeam.MAX_TEAMS} of ${PetTeam.MAX_TEAMS})",
+                        fontSize = 10.sp,
+                        color = TextMuted,
+                    )
                 }
             }
         }
     }
 
-    editorTeam?.let { team ->
+    if (editorOpen) {
         TeamEditorDialog(
-            initialTeam = team,
+            initialTeam = editorTeam,
             isNew = editorIsNew,
             candidates = allCandidates,
             apiReady = apiReady,
-            onConfirm = { finalTeam ->
-                if (editorIsNew) onCreate(finalTeam) else onUpdate(finalTeam)
+            strengthBonusByPetId = strengthBonusByPetId,
+            onConfirm = { name, petIds ->
+                val existing = editorTeam
+                if (editorIsNew || existing == null) onCreate(name, petIds)
+                else onUpdate(existing.id, name, petIds)
+                editorOpen = false
                 editorTeam = null
             },
-            onDismiss = { editorTeam = null },
+            onDismiss = { editorOpen = false; editorTeam = null },
         )
     }
 }
@@ -374,8 +362,8 @@ private fun TeamRow(
     val borderColor = if (isActive) StatusConnected.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.10f)
     // Pair each filled species with the pet id at the same slot index so we can look
     // up the pet's current mutations for composed sprite rendering.
-    val filledSlots = remember(team.petSpecies, team.petIds) {
-        team.petSpecies.zip(team.petIds).filter { (species, _) -> species.isNotBlank() }
+    val filledSlots = remember(team.members) {
+        team.members.filter { it.petSpecies.isNotBlank() }.map { it.petSpecies to it.petId }
     }
 
     Row(
@@ -396,6 +384,8 @@ private fun TeamRow(
             tint = TextMuted,
             modifier = dragModifier.size(20.dp),
         )
+
+        TeamEmblemBadge(team.emblem)
 
         // Pet sprites (only filled slots, with spacing) - composed with each pet's
         // current mutations when available.
@@ -468,24 +458,72 @@ private fun TeamRow(
     }
 }
 
+/**
+ * The team's badge, as the game assigns it. Read-only here: the server picks one on create and
+ * the game is where a player changes it.
+ *
+ * A letter renders as text, the sprite-backed kinds through [SpriteImage], and an emblem this
+ * build does not know renders as nothing rather than as a wrong guess.
+ */
+@Composable
+private fun TeamEmblemBadge(emblem: PetTeamEmblem) {
+    val size = 22.dp
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(5.dp))
+            .background(SurfaceBorder.copy(alpha = 0.25f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        when (emblem) {
+            is PetTeamEmblem.Letter -> Text(
+                emblem.label,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextSecondary,
+            )
+            is PetTeamEmblem.Pet -> SpriteImage(
+                category = "pets",
+                name = emblem.petSpecies,
+                size = size - 4.dp,
+                contentDescription = emblem.petSpecies,
+            )
+            is PetTeamEmblem.Cosmetic -> SpriteImage(
+                url = MgApi.findItem(emblem.cosmetic)?.sprite,
+                size = size - 4.dp,
+                contentDescription = emblem.cosmetic,
+            )
+            // The game draws these from its own icon atlas, which the app has no mapping for.
+            is PetTeamEmblem.Icon -> Text(
+                emblem.icon.take(1).uppercase(),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextMuted,
+            )
+            PetTeamEmblem.Unknown -> Unit
+        }
+    }
+}
+
 // ══════════════════════════════════════════
 // Team Editor Dialog
 // ══════════════════════════════════════════
 
 @Composable
 private fun TeamEditorDialog(
-    initialTeam: PetTeam,
+    initialTeam: PetTeam?,
     isNew: Boolean,
     candidates: List<TeamPetCandidate>,
     apiReady: Boolean,
-    onConfirm: (PetTeam) -> Unit,
+    strengthBonusByPetId: Map<String, Int>,
+    onConfirm: (name: String, petIds: List<String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var teamName by remember { mutableStateOf(initialTeam.name) }
+    var teamName by remember { mutableStateOf(initialTeam?.name.orEmpty()) }
     var slots by remember {
         mutableStateOf(
             List(PetTeam.MAX_PETS) { i ->
-                val id = initialTeam.petIds.getOrElse(i) { "" }
+                val id = initialTeam?.petIds?.getOrElse(i) { "" }.orEmpty()
                 if (id.isNotBlank()) candidates.find { it.id == id } else null
             }
         )
@@ -541,6 +579,7 @@ private fun TeamEditorDialog(
                             FilledSlotTile(
                                 pet = pet,
                                 apiReady = apiReady,
+                                strengthBonus = strengthBonusByPetId[pet.id] ?: 0,
                                 onRemove = { slots = slots.toMutableList().also { it[i] = null } },
                             )
                         } else {
@@ -564,15 +603,12 @@ private fun TeamEditorDialog(
                 }
                 Button(
                     onClick = {
-                        val team = initialTeam.copy(
-                            name = teamName.trim().ifBlank {
-                                slots.filterNotNull().joinToString(" / ") { it.name.ifBlank { it.species } }.ifBlank { "Team" }
-                            },
-                            petIds = List(PetTeam.MAX_PETS) { i -> slots[i]?.id ?: "" },
-                            petSpecies = List(PetTeam.MAX_PETS) { i -> slots[i]?.species ?: "" },
-                            petNames = List(PetTeam.MAX_PETS) { i -> slots[i]?.name ?: "" },
-                        )
-                        onConfirm(team)
+                        val chosen = slots.filterNotNull()
+                        val name = teamName.trim().ifBlank {
+                            chosen.joinToString(" / ") { it.name.ifBlank { it.species } }.ifBlank { "Team" }
+                        }
+                        // The server truncates past this, so do it here and show the real result.
+                        onConfirm(name.take(PetTeam.MAX_NAME_CLUSTERS), chosen.map { it.id })
                     },
                     enabled = slots.any { it != null },
                     colors = ButtonDefaults.buttonColors(containerColor = Accent),
@@ -627,6 +663,7 @@ private fun EmptySlotTile(onClick: () -> Unit) {
 private fun FilledSlotTile(
     pet: TeamPetCandidate,
     apiReady: Boolean,
+    strengthBonus: Int,
     onRemove: () -> Unit,
 ) {
     val entry = remember(pet.species, apiReady) { MgApi.findPet(pet.species) }
@@ -679,8 +716,12 @@ private fun FilledSlotTile(
                 maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, lineHeight = 10.sp,
             )
             if (ms > 0) {
-                val strText = if (isMax) "STR $cs" else "STR $cs/$ms"
-                val strColor = if (isMax) Color(0xFFFBBF24) else Accent
+                val strText = when {
+                    strengthBonus > 0 -> "STR ${cs + strengthBonus} (+$strengthBonus)"
+                    isMax -> "STR $cs"
+                    else -> "STR $cs/$ms"
+                }
+                val strColor = if (isMax || strengthBonus > 0) Color(0xFFFBBF24) else Accent
                 Text(strText, fontSize = 7.sp, fontWeight = FontWeight.Bold, color = strColor, lineHeight = 9.sp)
             }
             if (pet.abilities.isNotEmpty()) {

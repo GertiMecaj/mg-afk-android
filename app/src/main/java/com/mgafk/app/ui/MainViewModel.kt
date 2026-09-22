@@ -15,6 +15,8 @@ import androidx.lifecycle.viewModelScope
 import com.mgafk.app.data.model.AlertConfig
 import com.mgafk.app.data.model.AlertMode
 import com.mgafk.app.data.model.AppSettings
+import com.mgafk.app.data.repository.CropSize
+import com.mgafk.app.data.repository.PetTeams
 import com.mgafk.app.data.repository.GardenTiles
 import com.mgafk.app.data.model.BotSnapshot
 import com.mgafk.app.data.model.BotStatus
@@ -31,6 +33,10 @@ import com.mgafk.app.data.model.GardenPlantSnapshot
 import com.mgafk.app.data.model.InventoryEggItem
 import com.mgafk.app.data.model.InventoryPetItem
 import com.mgafk.app.data.model.InventoryPlantItem
+import com.mgafk.app.data.model.CrystalType
+import com.mgafk.app.data.model.GardenTileType
+import com.mgafk.app.data.model.PlacedCrystal
+import com.mgafk.app.data.repository.Crystals
 import com.mgafk.app.data.repository.PriceCalculator
 import com.mgafk.app.data.model.InventoryProduceItem
 import com.mgafk.app.data.model.InventorySeedItem
@@ -38,12 +44,14 @@ import com.mgafk.app.data.model.InventorySnapshot
 import com.mgafk.app.data.model.InventoryToolItem
 import com.mgafk.app.data.model.POTION_STORAGE_ID
 import com.mgafk.app.data.model.REPLENISH_POTION_ID
+import com.mgafk.app.data.model.XP_POTION_ID
 import com.mgafk.app.data.model.InventoryCropsItem
 import com.mgafk.app.data.model.InventoryDecorItem
 import com.mgafk.app.data.model.PetSnapshot
 import com.mgafk.app.data.model.PetTeam
 import com.mgafk.app.data.model.ReconnectConfig
 import com.mgafk.app.data.model.Session
+import com.mgafk.app.data.model.WeatherForecast
 import com.mgafk.app.data.model.SessionStatus
 import com.mgafk.app.data.model.ShopSnapshot
 import com.mgafk.app.data.repository.AriesApi
@@ -60,6 +68,7 @@ import com.mgafk.app.service.AlertNotifier
 import com.mgafk.app.service.cancelResumeNotification
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
@@ -86,6 +95,9 @@ private fun WakeLockMode.toServiceMode(): Int = when (this) {
     WakeLockMode.ALWAYS -> AfkService.MODE_ALWAYS
 }
 
+/** How often the Weather Station forecast is refetched. The card ticks its own countdowns. */
+private const val WEATHER_STATION_REFRESH_MS = 60_000L
+
 data class UiState(
     val sessions: List<Session> = listOf(Session()),
     val activeSessionId: String = "",
@@ -93,6 +105,7 @@ data class UiState(
     val collapsedCards: Map<String, Boolean> = emptyMap(),
     val connecting: Boolean = false,
     val apiReady: Boolean = false,
+    val weatherForecast: WeatherForecast? = null,
     val loadingStep: String = "",
     val updateAvailable: AppRelease? = null,
     val purchaseError: String = "",
@@ -177,9 +190,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Legacy migration: pet teams used to be a single global list. Seed each
             // session that has none yet from the old global one, so the previous behaviour
             // (same teams on every session) is preserved.
-            val legacyPetTeams = repo.loadPetTeams()
-            val migratedSessions = if (legacyPetTeams.isEmpty()) sessions
-                else sessions.map { if (it.petTeams.isEmpty()) it.copy(petTeams = legacyPetTeams) else it }
+            // Pet teams are server state now (see PetTeams); nothing is seeded from disk.
+            val migratedSessions = sessions
             val teamTipDismissed = repo.isTeamTipDismissed()
             val gardenTipDismissed = repo.isGardenTipDismissed()
             val seedTipDismissed = repo.isSeedTipDismissed()
@@ -213,6 +225,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             launch {
                 _state.update { it.copy(loadingStep = "Loading game data…") }
                 MgApi.preloadAll()
+                startWeatherStationRefresh()
                 _state.update { it.copy(loadingStep = "Preloading sprites…") }
                 preloadSprites()
                 _state.update { it.copy(apiReady = true, loadingStep = "") }
@@ -291,10 +304,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateSession(id: String, transform: (Session) -> Session) {
+        updateSessionInMemory(id, transform)
+        persist()
+    }
+
+    /**
+     * Same, minus the write to disk.
+     *
+     * For state the server hands back on every reconnect and that changes on its own schedule:
+     * persisting it buys nothing and would turn a ticking countdown into a disk write per tick.
+     */
+    private fun updateSessionInMemory(id: String, transform: (Session) -> Session) {
         _state.update { s ->
             s.copy(sessions = s.sessions.map { if (it.id == id) transform(it) else it })
         }
-        persist()
     }
 
     // ---- Connection ----
@@ -775,7 +798,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         updateSession(sessionId) { s ->
             s.copy(
                 feedingTrough = s.feedingTrough + toAdd.map { p ->
-                    InventoryCropsItem(id = p.id, species = p.species, scale = p.scale, mutations = p.mutations)
+                    InventoryCropsItem(id = p.id, species = p.species, size = p.size, mutations = p.mutations)
                 },
                 inventory = s.inventory.copy(
                     produce = s.inventory.produce.filter { it.id !in addedIds }
@@ -818,7 +841,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 inventory = s.inventory.copy(
                     produce = s.inventory.produce + InventoryProduceItem(
                         id = removed.id, species = removed.species,
-                        scale = removed.scale, mutations = removed.mutations,
+                        size = removed.size, mutations = removed.mutations,
                     )
                 ),
             )
@@ -874,46 +897,96 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Uses one Hunger Potion on [petItemId], pulling it out of the Tool Shack first when the
-     * inventory has none left. The potion only applies to the pet the player is standing on,
-     * so this teleports there first - same sequence the auto-feed uses.
+     * Uses one Hunger Potion on [petItemId] to refill its hunger.
      *
-     * The retrieval is a separate round trip, so this waits for the server to confirm the
-     * potion in the inventory before drinking it. If that confirmation never lands the potion
-     * simply stays where it is, retrieved but unused: nothing is consumed on a guess.
+     * See [usePotionOnPet] for the sequence both pet potions share.
      */
     fun useReplenishPotionOnPet(sessionId: String, petItemId: String) {
+        usePotionOnPet(sessionId, petItemId, REPLENISH_POTION_ID) { client ->
+            client.actions.useReplenishPotion(petItemId)
+        }
+    }
+
+    /**
+     * Uses one XP Potion on [petItemId].
+     *
+     * A pet that has already reached its strength ceiling is left alone: the game's reducer
+     * refuses the potion on it and returns without consuming anything, so sending the command
+     * would only cost the round trip. The caller hides the action in that case; this is the
+     * guard for a pet that matures between the tap and the send.
+     */
+    fun useXpPotionOnPet(sessionId: String, petItemId: String) {
+        val pet = _state.value.sessions.find { it.id == sessionId }
+            ?.pets?.find { it.id == petItemId }
+        if (pet != null && isPetFullyGrown(pet)) {
+            AppLog.d(TAG, "[Potion] $petItemId is already fully grown, XP Potion not used")
+            return
+        }
+        usePotionOnPet(sessionId, petItemId, XP_POTION_ID) { client ->
+            client.actions.xpPotion(petItemId)
+        }
+    }
+
+    /**
+     * Runs the sequence a pet potion needs: make sure one sits in the inventory, pulling it out
+     * of the Tool Shack when it does not, then walk over to the pet and drink it. A pet potion
+     * only applies to the pet the player is standing on, hence the teleport - the same sequence
+     * the auto-feed uses.
+     *
+     * The retrieval is a separate round trip, so this waits for the server to confirm the potion
+     * in the inventory before using it. If that confirmation never lands the potion simply stays
+     * where it is, retrieved but unused: nothing is consumed on a guess.
+     */
+    private fun usePotionOnPet(
+        sessionId: String,
+        petItemId: String,
+        potionId: String,
+        use: (RoomClient) -> Unit,
+    ) {
         viewModelScope.launch {
             val client = clients[sessionId] ?: return@launch
             val session = _state.value.sessions.find { it.id == sessionId } ?: return@launch
 
-            if (potionCountIn(session.inventory.tools) == 0) {
-                if (potionCountIn(session.toolShack) == 0) return@launch
+            if (potionCountIn(session.inventory.tools, potionId) == 0) {
+                if (potionCountIn(session.toolShack, potionId) == 0) return@launch
                 client.actions.retrieveItemFromStorage(
-                    itemId = REPLENISH_POTION_ID,
+                    itemId = potionId,
                     storageId = POTION_STORAGE_ID,
                     toInventoryIndex = totalInventoryCount(session),
                 )
                 val arrived = withTimeoutOrNull(POTION_RETRIEVAL_TIMEOUT_MS) {
                     _state.first { state ->
                         val tools = state.sessions.find { it.id == sessionId }?.inventory?.tools
-                        potionCountIn(tools.orEmpty()) > 0
+                        potionCountIn(tools.orEmpty(), potionId) > 0
                     }
                 }
                 if (arrived == null) {
-                    AppLog.d(TAG, "[Potion] Retrieval from $POTION_STORAGE_ID not confirmed for $sessionId")
+                    AppLog.d(TAG, "[Potion] Retrieval of $potionId from $POTION_STORAGE_ID not confirmed for $sessionId")
                     return@launch
                 }
             }
 
             val position = findPetPosition(client, petItemId) ?: return@launch
             client.actions.teleport(position.first, position.second)
-            client.actions.useReplenishPotion(petItemId)
+            use(client)
         }
     }
 
-    private fun potionCountIn(tools: List<InventoryToolItem>): Int =
-        tools.find { it.toolId == REPLENISH_POTION_ID }?.quantity ?: 0
+    private fun potionCountIn(
+        tools: List<InventoryToolItem>,
+        potionId: String = REPLENISH_POTION_ID,
+    ): Int = tools.find { it.toolId == potionId }?.quantity ?: 0
+
+    /** Whether [pet] sits at its strength ceiling, which is what makes an XP Potion a no-op. */
+    private fun isPetFullyGrown(pet: PetSnapshot): Boolean {
+        val entry = MgApi.findPet(pet.species) ?: return false
+        return PriceCalculator.isPetMaxStrength(
+            xp = pet.xp,
+            targetScale = pet.targetScale,
+            maxScale = entry.maxScale ?: 1.0,
+            hoursToMature = entry.hoursToMature ?: 1.0,
+        )
+    }
 
     /**
      * Reads the pet's current tile position from the player's own live petSlotInfos.
@@ -929,6 +1002,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val x = posObj["x"]?.jsonPrimitive?.doubleOrNull ?: return null
         val y = posObj["y"]?.jsonPrimitive?.doubleOrNull ?: return null
         return x to y
+    }
+
+    // ---- Crystals ----
+
+    /**
+     * Plants one [type] shard on an empty tile, dirt or boardwalk.
+     *
+     * Which shard gets spent is [Crystals.chooseForPlace]'s call. Nothing is sent when the
+     * player owns none, or when the garden already holds as many of that kind as it may.
+     */
+    fun placeCrystal(
+        sessionId: String,
+        type: CrystalType,
+        tileType: GardenTileType,
+        localTileIndex: Int,
+    ) {
+        val client = clients[sessionId] ?: return
+        val session = _state.value.sessions.find { it.id == sessionId } ?: return
+        if (!Crystals.canPlace(type, session.crystals)) {
+            AppLog.d(TAG, "[Crystal] ${type.id} is at its per-garden limit for $sessionId")
+            return
+        }
+        val shard = Crystals.chooseForPlace(Crystals.ownedShards(type, session.inventory.tools))
+        if (shard == null) {
+            AppLog.d(TAG, "[Crystal] no ${type.toolId} to plant for $sessionId")
+            return
+        }
+        client.actions.placeCrystal(shard.ref, tileType, localTileIndex)
+    }
+
+    /**
+     * Fuses a shard into [target], extending it by whatever fits under the ceiling.
+     *
+     * The gain is computed here rather than trusted from the UI, because the server rejects a
+     * gain larger than what is left, and the crystal may have ticked down since it was drawn.
+     */
+    fun fuseCrystal(sessionId: String, target: PlacedCrystal) {
+        val client = clients[sessionId] ?: return
+        val session = _state.value.sessions.find { it.id == sessionId } ?: return
+        // Measure against what the server last reported, not against what the card has counted
+        // down to. The server refuses a gain larger than the room actually left, so erring on
+        // the high side loses the whole fuse, while erring low only leaves seconds on the table.
+        val current = session.crystals.firstOrNull {
+            it.tileType == target.tileType && it.localTileIndex == target.localTileIndex
+        } ?: target
+        val shards = Crystals.ownedShards(current.type, session.inventory.tools)
+        val shard = Crystals.chooseForFuse(shards, current.remainingSeconds) ?: return
+        val gain = Crystals.mergeGainSeconds(current.remainingSeconds, shard.seconds)
+        if (gain <= 0) return
+        client.actions.fuseCrystal(shard.ref, current.tileType, current.localTileIndex, gain)
+    }
+
+    /** Takes [crystal] back into the inventory, keeping whatever time it has left. */
+    fun pickupCrystal(sessionId: String, crystal: PlacedCrystal) {
+        clients[sessionId]?.actions?.pickupCrystal(
+            crystalType = crystal.type,
+            tileType = crystal.tileType,
+            localTileIndex = crystal.localTileIndex,
+        )
     }
 
     // ---- Pet swap / equip / unequip ----
@@ -1238,22 +1370,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Move a tool (whole stack) from inventory into the Tool Shack. */
-    fun moveToolToShack(sessionId: String, toolId: String) {
+    /**
+     * Moves a tool to the Tool Shack. [toolKey] is what the game names it by, which is its own
+     * id for the tools it tracks individually (see [InventoryToolItem.storageKey]).
+     */
+    fun moveToolToShack(sessionId: String, toolKey: String) {
         val actions = clients[sessionId]?.actions ?: return
         val session = _state.value.sessions.find { it.id == sessionId } ?: return
         actions.putItemInStorage(
-            itemId = toolId,
+            itemId = toolKey,
             storageId = "ToolShack",
             toStorageIndex = session.toolShack.size,
         )
     }
 
     /** Move a tool (whole stack) from the Tool Shack back to inventory. */
-    fun moveToolFromShack(sessionId: String, toolId: String) {
+    fun moveToolFromShack(sessionId: String, toolKey: String) {
         val actions = clients[sessionId]?.actions ?: return
         val session = _state.value.sessions.find { it.id == sessionId } ?: return
         actions.retrieveItemFromStorage(
-            itemId = toolId,
+            itemId = toolKey,
             storageId = "ToolShack",
             toInventoryIndex = totalInventoryCount(session),
         )
@@ -1587,11 +1723,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val pendingUnpotJobs = mutableMapOf<String, Job>()
 
-    /** Plant a potted plant back into the garden. */
-    fun plantGardenPlant(sessionId: String, itemId: String) {
+    /**
+     * Unpots [itemId] onto [tileId], or onto the first free tile when it is null (see
+     * [com.mgafk.app.data.model.PlantPlacementMode]).
+     */
+    fun plantGardenPlant(sessionId: String, itemId: String, tileId: Int? = null) {
         val client = clients[sessionId] ?: return
         val session = _state.value.sessions.find { it.id == sessionId } ?: return
-        val freeSlot = findFirstFreePlantTile(client)
+        val freeSlot = tileId ?: findFirstFreePlantTile(client)
         if (freeSlot == null) {
             AppLog.w(TAG, "[PlantGardenPlant] No free tile available")
             return
@@ -1626,11 +1765,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val pendingPlantJobs = mutableMapOf<String, Job>()
 
-    /** Plant a seed on the first available dirt tile with optimistic update. */
-    fun plantSeed(sessionId: String, species: String) {
+    /**
+     * Plant a seed with optimistic update, on [tileId] when the player picked one, otherwise on
+     * the first available dirt tile (see [com.mgafk.app.data.model.PlantPlacementMode]).
+     */
+    fun plantSeed(sessionId: String, species: String, tileId: Int? = null) {
         val client = clients[sessionId] ?: return
         val session = _state.value.sessions.find { it.id == sessionId } ?: return
-        val freeSlot = findFirstFreePlantTile(client)
+        val freeSlot = tileId ?: findFirstFreePlantTile(client)
         if (freeSlot == null) {
             AppLog.w(TAG, "[PlantSeed] No free tile available")
             return
@@ -1691,130 +1833,116 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- Pet Teams ----
 
-    private fun updatePetTeams(sessionId: String, transform: (List<PetTeam>) -> List<PetTeam>) {
-        updateSession(sessionId) { it.copy(petTeams = transform(it.petTeams)) }
-    }
+    // Teams are server state now: every change goes out as the game's own command and comes
+    // back through PetTeamsChanged. Nothing is stored locally, so nothing can drift.
 
-    /** Create a new pet team from the editor overlay selections. */
-    fun createPetTeam(sessionId: String, team: PetTeam) {
-        updatePetTeams(sessionId) { teams ->
-            if (teams.size >= PetTeam.MAX_TEAMS) teams else teams + team
+    /**
+     * Create a team from the editor overlay selections.
+     *
+     * The id is minted here, the way the game's client does. Refused past [PetTeam.MAX_TEAMS],
+     * which the server would reject silently.
+     */
+    fun createPetTeam(sessionId: String, name: String, petIds: List<String>) {
+        val client = clients[sessionId] ?: return
+        val session = _state.value.sessions.find { it.id == sessionId } ?: return
+        if (session.petTeams.size >= PetTeam.MAX_TEAMS) {
+            AppLog.w(TAG, "[PetTeam] Team limit reached (${PetTeam.MAX_TEAMS}), not creating")
+            return
         }
+        val members = petIds.filter { it.isNotBlank() }.take(PetTeam.MAX_PETS)
+        if (members.size < PetTeam.MIN_PETS || name.isBlank()) return
+        client.actions.savePetTeam(
+            teamId = UUID.randomUUID().toString(),
+            name = name,
+            petIds = members,
+            isCreate = true,
+        )
     }
 
-    /** Update an existing pet team (from the editor overlay). */
-    fun updatePetTeam(sessionId: String, team: PetTeam) {
-        updatePetTeams(sessionId) { teams ->
-            teams.map { t -> if (t.id == team.id) team.copy(updatedAt = System.currentTimeMillis()) else t }
-        }
+    /** Rename a team and/or change its members. Both travel in the same SavePetTeam. */
+    fun updatePetTeam(sessionId: String, teamId: String, name: String, petIds: List<String>) {
+        val client = clients[sessionId] ?: return
+        val members = petIds.filter { it.isNotBlank() }.take(PetTeam.MAX_PETS)
+        if (members.size < PetTeam.MIN_PETS || name.isBlank()) return
+        client.actions.savePetTeam(teamId = teamId, name = name, petIds = members, isCreate = false)
     }
 
-    /** Delete a team by id. */
     fun deletePetTeam(sessionId: String, teamId: String) {
-        updatePetTeams(sessionId) { teams -> teams.filter { t -> t.id != teamId } }
+        clients[sessionId]?.actions?.deletePetTeam(teamId)
     }
 
-    /** Rename a team. */
     fun renamePetTeam(sessionId: String, teamId: String, newName: String) {
-        updatePetTeams(sessionId) { teams ->
-            teams.map { t -> if (t.id == teamId) t.copy(name = newName, updatedAt = System.currentTimeMillis()) else t }
-        }
+        val session = _state.value.sessions.find { it.id == sessionId } ?: return
+        val team = session.petTeams.find { it.id == teamId } ?: return
+        updatePetTeam(sessionId, teamId, newName, team.petIds)
     }
 
     /** Reorder teams by moving [fromIndex] to [toIndex]. */
     fun reorderPetTeams(sessionId: String, fromIndex: Int, toIndex: Int) {
-        updatePetTeams(sessionId) { teams ->
-            val list = teams.toMutableList()
-            if (fromIndex in list.indices && toIndex in list.indices) {
-                val item = list.removeAt(fromIndex)
-                list.add(toIndex, item)
-            }
-            list
-        }
+        val client = clients[sessionId] ?: return
+        val teams = _state.value.sessions.find { it.id == sessionId }?.petTeams ?: return
+        if (fromIndex !in teams.indices || toIndex !in teams.indices || fromIndex == toIndex) return
+        client.actions.movePetTeam(movePetTeamId = teams[fromIndex].id, toPetTeamIndex = toIndex)
     }
 
     /**
-     * Activate a pet team: swap active pets to match the team composition.
+     * Activate a pet team.
      *
-     * Strategy (sequential, same as Gemini userscript):
-     * 1. Remove active pets that are NOT in the target team.
-     * 2. Equip target pets that are NOT currently active.
-     *
-     * Pets already in the right slot are left untouched.
+     * One command: the server pulls the members out of the inventory and the storages itself,
+     * skipping any the player no longer owns. The app used to re-enact this pet by pet with
+     * pickup/store/place, which could half-apply and could not reach a pet in a storage.
      */
     fun activateTeam(sessionId: String, team: PetTeam) {
         val client = clients[sessionId] ?: return
         val session = _state.value.sessions.find { it.id == sessionId } ?: return
-        val actions = client.actions
 
-        val activePetIds = session.pets.map { it.id }.toSet()
-        val targetPetIds = team.petIds.filter { it.isNotBlank() }.toSet()
-
-        // Already the same team? Skip.
-        if (activePetIds == targetPetIds) {
+        if (PetTeams.isActive(team, session.pets.map { it.id })) {
             AppLog.d(TAG, "[ActivateTeam] Team already active, skipping")
             return
         }
-
-        AppLog.d(TAG, "[ActivateTeam] active=$activePetIds, target=$targetPetIds")
-
-        // Step 1: Remove pets that are active but NOT in target
-        val toRemove = activePetIds - targetPetIds
-        for (petId in toRemove) {
-            AppLog.d(TAG, "[ActivateTeam] Removing $petId")
-            actions.pickupPet(petId = petId)
-            actions.putItemInStorage(itemId = petId, storageId = "PetHutch")
+        // The game refuses the same way rather than emptying the slots.
+        val ownedPetIds = (session.pets.map { it.id } +
+            session.petHutch.map { it.id } +
+            session.inventory.pets.map { it.id }).toSet()
+        if (team.petIds.none { it in ownedPetIds }) {
+            AppLog.w(TAG, "[ActivateTeam] None of '${team.name}' pets are owned any more, skipping")
+            return
         }
 
-        // Step 2: Equip pets that are in target but NOT active
-        val toEquip = targetPetIds - activePetIds
-        val hutchPetIds = session.petHutch.map { it.id }.toSet()
-        val inventoryPetIds = session.inventory.pets.map { it.id }.toSet()
-
-        // Determine placement position
-        val me = client.gameState.getPlayer(client.playerId)
-        val slotIndex = (me?.slotIndex ?: 0).coerceIn(0, 5)
-        val base = SLOT_BASE_TILE[slotIndex]
-        var nextLocal = 0
-
-        for (petId in toEquip) {
-            val isInHutch = petId in hutchPetIds
-            val isInInventory = petId in inventoryPetIds
-
-            if (!isInHutch && !isInInventory) {
-                AppLog.w(TAG, "[ActivateTeam] Pet $petId not found in hutch or inventory, skipping")
-                continue
-            }
-
-            if (isInHutch) {
-                AppLog.d(TAG, "[ActivateTeam] Retrieving $petId from hutch")
-                actions.retrieveItemFromStorage(itemId = petId, storageId = "PetHutch")
-            }
-
-            val x = base.first + nextLocal
-            val y = base.second
-            AppLog.d(TAG, "[ActivateTeam] Placing $petId at ($x, $y) local=$nextLocal")
-            actions.placePet(
-                itemId = petId,
-                x = x.toDouble(), y = y.toDouble(),
-                tileType = "Dirt",
-                localTileIndex = nextLocal,
-            )
-            nextLocal++
-        }
+        AppLog.d(TAG, "[ActivateTeam] Applying '${team.name}' (${team.id})")
+        client.actions.applyPetTeam(team.id)
     }
 
     /**
-     * Detect which saved team matches the currently active pets (order-independent).
-     * Returns the team id or null if no match.
+     * The team whose members are exactly the active pets, or null when none matches.
+     * Mirrors the game's own rule, see [PetTeams.isActive].
      */
     fun detectActiveTeamId(sessionId: String): String? {
         val session = _state.value.sessions.find { it.id == sessionId } ?: return null
-        val activePetIds = session.pets.map { it.id }.toSet()
-        if (activePetIds.isEmpty()) return null
-        return session.petTeams.firstOrNull { team ->
-            team.petIds.filter { it.isNotBlank() }.toSet() == activePetIds
-        }?.id
+        val activePetIds = session.pets.map { it.id }
+        return session.petTeams.firstOrNull { PetTeams.isActive(it, activePetIds) }?.id
+    }
+
+
+    // ---- Weather Station ----
+
+    private var weatherStationJob: Job? = null
+
+    /**
+     * Keeps [UiState.weatherForecast] fresh. The card ticks its own countdowns from the events'
+     * timestamps, so this only has to run often enough to pick up the next events, not to drive
+     * the display.
+     */
+    private fun startWeatherStationRefresh() {
+        if (weatherStationJob?.isActive == true) return
+        weatherStationJob = viewModelScope.launch {
+            while (true) {
+                VersionFetcher.fetchGameWeather()?.let { forecast ->
+                    _state.update { it.copy(weatherForecast = forecast) }
+                }
+                delay(WEATHER_STATION_REFRESH_MS)
+            }
+        }
     }
 
     // ---- Card collapse persistence ----
@@ -2003,7 +2131,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // Fire alert checks (alarm items auto-batch within 300ms)
                 val alerts = _state.value.alerts
                 alertNotifier.checkWeather(event.weather, previousWeather, alerts)
-                alertNotifier.checkPetHunger(newPets, alerts)
+                alertNotifier.checkPetHunger(sessionId, newPets, alerts)
+            }
+            is ClientEvent.PetTeamsChanged -> {
+                updateSession(sessionId) { it.copy(petTeams = event.teams) }
             }
             is ClientEvent.GardenChanged -> {
                 val newGarden = mutableListOf<GardenPlantSnapshot>()
@@ -2027,10 +2158,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             tileId = tile.tileId,
                             slotIndex = slotId,
                             species = species,
-                            targetScale = slot["targetScale"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                            size = CropSize.clamp(slot["size"]?.jsonPrimitive?.doubleOrNull ?: 0.0),
                             mutations = mutations,
                             startTime = slot["startTime"]?.jsonPrimitive?.longOrNull ?: 0L,
                             endTime = slot["endTime"]?.jsonPrimitive?.longOrNull ?: 0L,
+                            preserved = slot["preserved"]?.jsonPrimitive?.booleanOrNull == true,
                         )
                     }
                 }
@@ -2052,6 +2184,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val freeTiles = clients[sessionId]?.let { computeFreePlantTileCount(it) } ?: 0
                 updateSession(sessionId) { it.copy(garden = newGarden, freePlantTiles = freeTiles) }
+            }
+            is ClientEvent.CrystalsChanged -> {
+                // Not persisted: the server reports it again on every reconnect, and it changes
+                // as often as a crystal burns down.
+                updateSessionInMemory(sessionId) {
+                    it.copy(
+                        crystals = event.crystals,
+                        occupiedTiles = event.occupiedTiles,
+                        crystalsReadAtMs = System.currentTimeMillis(),
+                    )
+                }
             }
             is ClientEvent.InventoryChanged -> {
                 val seeds = mutableListOf<InventorySeedItem>()
@@ -2076,7 +2219,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "Produce" -> produce.add(InventoryProduceItem(
                             id = obj["id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                             species = obj["species"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                            scale = obj["scale"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                            size = CropSize.clamp(obj["size"]?.jsonPrimitive?.doubleOrNull ?: 0.0),
                             mutations = (obj["mutations"] as? JsonArray)
                                 ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                                 ?.filter { it.isNotBlank() } ?: emptyList(),
@@ -2090,14 +2233,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 val slot = slotEl as? JsonObject ?: return@forEach
                                 val slotSpecies = slot["species"]?.jsonPrimitive?.contentOrNull
                                     ?: plantSpecies
-                                val scale = slot["targetScale"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+                                val size = CropSize.clamp(slot["size"]?.jsonPrimitive?.doubleOrNull ?: 0.0)
                                 val muts = (slot["mutations"] as? JsonArray)
                                     ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                                     ?.filter { it.isNotBlank() } ?: emptyList()
-                                plantPrice += PriceCalculator.calculateCropSellPrice(slotSpecies, scale, muts) ?: 0L
+                                plantPrice += PriceCalculator.calculateCropSellPrice(slotSpecies, size, muts) ?: 0L
                                 parsedSlots.add(com.mgafk.app.data.model.InventoryPlantSlot(
                                     species = slotSpecies,
-                                    targetScale = scale,
+                                    size = size,
                                     mutations = muts,
                                 ))
                             }
@@ -2125,6 +2268,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "Tool" -> tools.add(InventoryToolItem(
                             toolId = obj["toolId"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                             quantity = obj["quantity"]?.jsonPrimitive?.intOrNull ?: 1,
+                            id = obj["id"]?.jsonPrimitive?.contentOrNull,
+                            remainingActiveSeconds = obj["remainingActiveSeconds"]?.jsonPrimitive?.intOrNull,
                         ))
                         "Decor" -> decors.add(InventoryDecorItem(
                             decorId = obj["decorId"]?.jsonPrimitive?.contentOrNull.orEmpty(),
@@ -2202,7 +2347,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             "FeedingTrough" -> troughCrops.add(InventoryCropsItem(
                                 id = obj["id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                                 species = obj["species"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                                scale = obj["scale"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                                size = CropSize.clamp(obj["size"]?.jsonPrimitive?.doubleOrNull ?: 0.0),
                                 mutations = (obj["mutations"] as? JsonArray)
                                     ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                                     ?.filter { it.isNotBlank() } ?: emptyList(),
