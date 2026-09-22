@@ -65,7 +65,7 @@ jobs:
           # v2.4.23 upstream already includes the HarvestCrop cropItemId / command-envelope fix
           python3 fix-qol-transformer.py
           python3 apply-qol-v9.py 2>&1 | tee /tmp/qol-v9.log
-          python3 fix-garden-scale-v1107.py
+          # v2.4.23 natively models crop size (50..100) + maxSizeMultiplier; old scale shim is obsolete
           python3 background-always-on.py
           python3 fast-money-v10.py 2>&1 | tee /tmp/fast-money-v10.log
           python3 session-automation-v11.py 2>&1 | tee /tmp/session-automation-v11.log
