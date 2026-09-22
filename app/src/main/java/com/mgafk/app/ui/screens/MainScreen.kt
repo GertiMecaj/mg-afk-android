@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.Pets
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ShoppingCart
+import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -107,6 +108,7 @@ import com.mgafk.app.ui.screens.storage.ToolShackCard
 import com.mgafk.app.ui.screens.pets.ActivePetsCard
 import com.mgafk.app.ui.screens.pets.PetTeamCard
 import com.mgafk.app.ui.screens.shops.ShopsCards
+import com.mgafk.app.ui.screens.nuclear.NuclearLogsCard
 import com.mgafk.app.ui.screens.status.LiveStatusCard
 import com.mgafk.app.ui.screens.status.WeatherStationCard
 import com.mgafk.app.ui.theme.Accent
@@ -140,6 +142,7 @@ enum class NavSection(
     STORAGE("Storage", Icons.Outlined.Inventory2, requiresConnection = true),
     GARDEN("Garden", Icons.Outlined.Grass, requiresConnection = true),
     SHOPS("Shops", Icons.Outlined.ShoppingCart, requiresConnection = true),
+    NUCLEAR("Nuclear", Icons.Outlined.Science),
     SOCIAL("Social", Icons.Outlined.People),
     ALERTS("Alerts", Icons.Outlined.Notifications),
     SETTINGS("Settings", Icons.Outlined.Settings),
@@ -421,6 +424,14 @@ private fun DrawerContent(
                     )
                 }
         }
+
+        DrawerItem(
+            icon = NavSection.NUCLEAR.icon,
+            label = NavSection.NUCLEAR.label,
+            selected = selected == NavSection.NUCLEAR,
+            enabled = true,
+            onClick = { onSelect(NavSection.NUCLEAR) },
+        )
 
         // Mini Games, Alerts, Settings & Debug - pinned at bottom
         HorizontalDivider(color = SurfaceBorder, thickness = 1.dp)
@@ -720,6 +731,9 @@ private fun SectionContent(
                 onBuy = { shopType, itemName -> viewModel.purchaseShopItem(session.id, shopType, itemName) },
                 onBuyAll = { shopType, itemName -> viewModel.purchaseAllShopItem(session.id, shopType, itemName) },
             )
+        }
+        NavSection.NUCLEAR -> {
+            NuclearLogsCard()
         }
         NavSection.STORAGE -> {
             SectionTip(
