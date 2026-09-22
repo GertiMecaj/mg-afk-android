@@ -248,8 +248,8 @@ replace_once(
 )
 replace_once(
     main,
-    "                onGrowEgg = { eggId -> viewModel.growEgg(session.id, eggId) },\n                onPlantGardenPlant = { itemId -> viewModel.plantGardenPlant(session.id, itemId) },",
-    "                onGrowEgg = { eggId -> viewModel.growEgg(session.id, eggId) },\n                autoPlantEggs = session.autoPlantEggs,\n                onAutoPlantEggsChanged = { enabled -> viewModel.setAutoPlantEggs(session.id, enabled) },\n                onPlantGardenPlant = { itemId -> viewModel.plantGardenPlant(session.id, itemId) },",
+    "                onGrowEgg = { eggId -> viewModel.growEgg(session.id, eggId) },\n",
+    "                onGrowEgg = { eggId -> viewModel.growEgg(session.id, eggId) },\n                autoPlantEggs = session.autoPlantEggs,\n                onAutoPlantEggsChanged = { enabled -> viewModel.setAutoPlantEggs(session.id, enabled) },\n",
 )
 replace_once(
     main,
