@@ -70,6 +70,7 @@ jobs:
           python3 fast-money-v10.py 2>&1 | tee /tmp/fast-money-v10.log
           python3 session-automation-v11.py 2>&1 | tee /tmp/session-automation-v11.log
           python3 dedupe-hoarder-v11.py 2>&1 | tee /tmp/dedupe-hoarder-v11.log
+          python3 latest-v13-compat.py 2>&1 | tee /tmp/latest-v13-compat.log
           python3 lab-potions-v12.py 2>&1 | tee /tmp/lab-potions-v12.log
 
       - name: Upload transformer diagnostic
@@ -82,6 +83,7 @@ jobs:
             /tmp/fast-money-v10.log
             /tmp/session-automation-v11.log
             /tmp/dedupe-hoarder-v11.log
+            /tmp/latest-v13-compat.log
             /tmp/lab-potions-v12.log
           if-no-files-found: ignore
 
