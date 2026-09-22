@@ -70,13 +70,15 @@ replace_once(
 )
 
 # ---------------------------------------------------------------------------
-# Dashboard: Coins + Magic Dust + Bread balance + a clearly-labelled weather report.
+# Dashboard: Coins + Magic Dust + Bread balance.
+# v2.4.23 moved weather into WeatherStationCard, so do not re-add the retired
+# LiveStatus weather row here.
 # ---------------------------------------------------------------------------
 live = "app/src/main/java/com/mgafk/app/ui/screens/status/LiveStatusCard.kt"
 replace_once(
     live,
-    "import com.mgafk.app.data.repository.MgApi\n",
-    "import com.mgafk.app.data.repository.MgApi\nimport com.mgafk.app.data.repository.PriceCalculator\n",
+    "import com.mgafk.app.data.model.Session\n",
+    "import com.mgafk.app.data.model.Session\nimport com.mgafk.app.data.repository.PriceCalculator\n",
 )
 replace_once(
     live,
@@ -85,10 +87,9 @@ replace_once(
 )
 replace_once(
     live,
-    "fun LiveStatusCard(session: Session, modifier: Modifier = Modifier) {\n    AppCard(modifier = modifier, title = \"Live Status\", collapsible = true, persistKey = \"dashboard.liveStatus\") {\n        StatusRow(\"Players\", \"${session.players}\")\n        UptimeRow(session.connectedAt)\n        StatusRow(\"Player\", session.playerName.ifBlank { \"-\" })\n        StatusRow(\"Room ID\", session.roomId.ifBlank { \"-\" })\n        WeatherRow(session.weather)\n        StatusRow(\"Player ID\", session.playerId.ifBlank { \"-\" })\n    }\n}",
-    "fun LiveStatusCard(session: Session, currencyBalance: Long? = null, modifier: Modifier = Modifier) {\n    val ownCoins = session.playersList.firstOrNull { it.id == session.playerId }?.coins ?: 0.0\n    AppCard(modifier = modifier, title = \"Live Status\", collapsible = true, persistKey = \"dashboard.liveStatus\") {\n        StatusRow(\"Players\", \"${session.players}\")\n        UptimeRow(session.connectedAt)\n        StatusRow(\"Player\", session.playerName.ifBlank { \"-\" })\n        StatusRow(\"Room ID\", session.roomId.ifBlank { \"-\" })\n        StatusRow(\"Coins\", PriceCalculator.formatFull(ownCoins.roundToLong()))\n        StatusRow(\"Magic Dust\", PriceCalculator.formatFull(session.magicDust.roundToLong()))\n        StatusRow(\"Breads\", currencyBalance?.let(PriceCalculator::formatFull) ?: \"-\")\n        WeatherRow(session.weather)\n        StatusRow(\"Player ID\", session.playerId.ifBlank { \"-\" })\n    }\n}",
+    "fun LiveStatusCard(session: Session, modifier: Modifier = Modifier) {\n    AppCard(modifier = modifier, title = \"Live Status\", collapsible = true, persistKey = \"dashboard.liveStatus\") {\n        StatusRow(\"Players\", \"\${session.players}\")\n        UptimeRow(session.connectedAt)\n        StatusRow(\"Player\", session.playerName.ifBlank { \"-\" })\n        StatusRow(\"Room ID\", session.roomId.ifBlank { \"-\" })\n        StatusRow(\"Player ID\", session.playerId.ifBlank { \"-\" })\n    }\n}",
+    "fun LiveStatusCard(session: Session, currencyBalance: Long? = null, modifier: Modifier = Modifier) {\n    val ownCoins = session.playersList.firstOrNull { it.id == session.playerId }?.coins ?: 0.0\n    AppCard(modifier = modifier, title = \"Live Status\", collapsible = true, persistKey = \"dashboard.liveStatus\") {\n        StatusRow(\"Players\", \"\${session.players}\")\n        UptimeRow(session.connectedAt)\n        StatusRow(\"Player\", session.playerName.ifBlank { \"-\" })\n        StatusRow(\"Room ID\", session.roomId.ifBlank { \"-\" })\n        StatusRow(\"Coins\", PriceCalculator.formatFull(ownCoins.roundToLong()))\n        StatusRow(\"Magic Dust\", PriceCalculator.formatFull(session.magicDust.roundToLong()))\n        StatusRow(\"Breads\", currencyBalance?.let(PriceCalculator::formatFull) ?: \"-\")\n        StatusRow(\"Player ID\", session.playerId.ifBlank { \"-\" })\n    }\n}",
 )
-replace_once(live, '            text = "Weather",', '            text = "Weather Report",')
 
 # ---------------------------------------------------------------------------
 # Storage inventory: keep every category window visible even when empty,
