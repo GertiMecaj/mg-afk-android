@@ -1568,9 +1568,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         NuclearLogStore.observePotionInventory(sessionId, session.inventory.tools)
         NuclearLogStore.observeGarden(sessionId, session.garden)
 
+        // The server keys crop actions by the explicit slotId even though this field is named
+        // growSlotIdx on the wire. Keep the array position separately for DNA/debugging.
         client.actions.mutationPotion(
             tileObjectIdx = tileObjectIdx,
-            growSlotIdx = growSlotIdx,
+            growSlotIdx = slotId,
             mutation = mutation,
         )
     }
