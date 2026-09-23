@@ -8,6 +8,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import com.mgafk.app.data.AppLog
+import com.mgafk.app.data.NuclearLogStore
 import coil.imageLoader
 import coil.request.ImageRequest
 import androidx.lifecycle.AndroidViewModel
@@ -1523,6 +1524,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         clients[sessionId]?.actions?.harvestCrop(slot = slot, slotsIndex = slotIndex)
     }
 
+    /**
+     * Sends the game's existing MutationPotion command for one exact crop.
+     *
+     * No client-side inventory bypass is performed here. The buttons stay available for
+     * protocol testing, while the server remains authoritative about whether the requested
+     * mutation/potion is valid and available.
+     */
+    fun injectMutation(
+        sessionId: String,
+        tileObjectIdx: Int,
+        growSlotIdx: Int,
+        slotId: Int,
+        mutation: String,
+    ) {
+        val client = clients[sessionId] ?: return
+        val session = _state.value.sessions.find { it.id == sessionId } ?: return
+        val crop = session.garden.firstOrNull {
+            it.tileId == tileObjectIdx && it.growSlotIdx == growSlotIdx
+        } ?: return
+        val toolId = when (mutation) {
+            "Chilled" -> "ChilledPotion"
+            "Frozen" -> "FrozenPotion"
+            else -> "${mutation}Potion"
+        }
+        val inventoryCount = session.inventory.tools
+            .firstOrNull { it.toolId == toolId }?.quantity ?: 0
+
+        NuclearLogStore.beginInjectTrace(
+            sessionId = sessionId,
+            tileObjectIdx = tileObjectIdx,
+            growSlotIdx = growSlotIdx,
+            slotId = slotId,
+            species = crop.species,
+            mutation = mutation,
+            toolId = toolId,
+            inventoryCount = inventoryCount,
+            size = crop.size,
+            mutations = crop.mutations,
+            startTime = crop.startTime,
+            endTime = crop.endTime,
+        )
+        NuclearLogStore.observePotionInventory(sessionId, session.inventory.tools)
+        NuclearLogStore.observeGarden(sessionId, session.garden)
+
+        client.actions.mutationPotion(
+            tileObjectIdx = tileObjectIdx,
+            growSlotIdx = growSlotIdx,
+            mutation = mutation,
+        )
+    }
+
     private val pendingCleanseJobs = mutableMapOf<String, Job>()
 
     /** Cleanse one mutation from a crop slot. Requires a CropCleanser tool. */
@@ -2157,6 +2209,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         newGarden += GardenPlantSnapshot(
                             tileId = tile.tileId,
                             slotIndex = slotId,
+                            growSlotIdx = index,
+                            slotId = slotId,
                             species = species,
                             size = CropSize.clamp(slot["size"]?.jsonPrimitive?.doubleOrNull ?: 0.0),
                             mutations = mutations,
@@ -2184,6 +2238,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val freeTiles = clients[sessionId]?.let { computeFreePlantTileCount(it) } ?: 0
                 updateSession(sessionId) { it.copy(garden = newGarden, freePlantTiles = freeTiles) }
+                NuclearLogStore.observeGarden(sessionId, newGarden)
             }
             is ClientEvent.CrystalsChanged -> {
                 // Not persisted: the server reports it again on every reconnect, and it changes
@@ -2409,6 +2464,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         availableStorages = availableStorages,
                     )
                 }
+                NuclearLogStore.observePotionInventory(sessionId, tools)
                 scheduleTroughAlertCheck(sessionId)
                 runAutoStock(sessionId, seeds, decors, tools, siloSeeds, shedDecors, shackTools, availableStorages)
             }
