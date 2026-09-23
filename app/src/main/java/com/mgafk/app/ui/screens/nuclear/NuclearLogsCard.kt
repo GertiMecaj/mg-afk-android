@@ -66,6 +66,7 @@ fun NuclearLogsCard() {
     var visibleLimit by remember { mutableIntStateOf(PAGE_SIZE) }
     var confirmClear by remember { mutableStateOf(false) }
     var exportFiltered by remember { mutableStateOf(false) }
+    var exportLastInject by remember { mutableStateOf(false) }
 
     val filtered = remember(entries, query, kind) {
         val needle = query.trim()
@@ -82,11 +83,16 @@ fun NuclearLogsCard() {
     ) { uri ->
         if (uri != null) {
             val useFiltered = exportFiltered
+            val useLastInject = exportLastInject
             val exportQuery = if (useFiltered) query else ""
             val exportKind = if (useFiltered) kind else null
             scope.launch(Dispatchers.IO) {
                 context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
-                    NuclearLogStore.writeExport(writer, exportQuery, exportKind)
+                    if (useLastInject) {
+                        NuclearLogStore.writeLastInjectTrace(writer)
+                    } else {
+                        NuclearLogStore.writeExport(writer, exportQuery, exportKind)
+                    }
                 }
             }
         }
@@ -100,8 +106,8 @@ fun NuclearLogsCard() {
             color = TextPrimary,
         )
         Text(
-            text = "Persistent raw WebSocket traffic, connection events, parser failures, state updates and app logs. " +
-                "The recorder runs automatically; authentication cookies are not recorded.",
+            text = "Compact event-focused protocol log. Heartbeats, countdown ticks, movement noise and repeated full user-slot snapshots are dropped. " +
+                "Commands, results, meaningful state changes, abilities and INJECT traces are retained; authentication cookies are not recorded.",
             fontSize = 12.sp,
             color = TextSecondary,
         )
@@ -153,19 +159,33 @@ fun NuclearLogsCard() {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = {
+                    exportLastInject = false
                     exportFiltered = false
                     exportLauncher.launch(exportFileName("all"))
                 },
             ) {
-                Text("Export All Logs")
+                Text("Export All")
             }
             OutlinedButton(
                 onClick = {
+                    exportLastInject = false
                     exportFiltered = true
                     exportLauncher.launch(exportFileName("filtered"))
                 },
             ) {
                 Text("Export Filtered")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    exportFiltered = false
+                    exportLastInject = true
+                    exportLauncher.launch(exportFileName("inject"))
+                },
+                enabled = NuclearLogStore.hasLastInjectTrace(),
+            ) {
+                Text("Export Last INJECT")
             }
             OutlinedButton(onClick = { confirmClear = true }) {
                 Text("Clear")
@@ -198,7 +218,7 @@ fun NuclearLogsCard() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "The on-screen list keeps a lightweight rolling preview. Export All streams the complete persisted log file.",
+            text = "The on-screen list is a lightweight rolling preview. Export All streams the compact persisted event log; Export Last INJECT contains only the most recent 15-second mutation experiment trace.",
             color = TextMuted,
             fontSize = 10.sp,
         )
