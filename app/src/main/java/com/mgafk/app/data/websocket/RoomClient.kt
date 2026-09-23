@@ -406,8 +406,6 @@ class RoomClient {
     }
 
     private fun handleMessage(raw: String) {
-        NuclearLogStore.record(NuclearLogKind.WS_IN, "raw", raw)
-
         if (raw == "ping" || raw == "\"ping\"") {
             send("pong")
             return
@@ -425,6 +423,7 @@ class RoomClient {
         }
 
         val type = msg["type"]?.jsonPrimitive?.contentOrNull
+        NuclearLogStore.recordIncoming(type, msg, raw)
         AppLog.d(TAG, "onMessage type=$type")
 
         try {
@@ -532,6 +531,7 @@ class RoomClient {
      * later command until the next Welcome re-seeds.
      */
     private fun handleCommandResult(msg: JsonObject) {
+        NuclearLogStore.noteCommandResult(msg)
         if (msg["ok"]?.jsonPrimitive?.booleanOrNull == true) return
         val code = msg["code"]?.jsonPrimitive?.contentOrNull.orEmpty()
         val commandType = msg["commandType"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -541,12 +541,6 @@ class RoomClient {
 
     private fun handlePartialState(msg: JsonObject) {
         val patches = msg["patches"] as? JsonArray
-        NuclearLogStore.record(
-            NuclearLogKind.STATE,
-            "partial_state",
-            "patches=${patches?.size ?: 0}",
-        )
-
         // Check if any patch touches our player's activityLogs
         val userSlotIndex = gameState.findUserSlotIndex(playerId)
         val touchesLogs = userSlotIndex != null && patches?.any { el ->
@@ -662,6 +656,13 @@ class RoomClient {
 
         // Emit oldest first → ViewModel prepends each → most recent ends up on top
         for (log in newEntries) {
+            NuclearLogStore.recordAbility(
+                action = log.action,
+                petSpecies = log.petSpecies,
+                petId = log.params["petId"],
+                timestamp = log.timestamp,
+                params = log.params,
+            )
             _events.tryEmit(ClientEvent.AbilityLogged(log))
         }
 
@@ -1014,7 +1015,7 @@ class RoomClient {
     }
 
     private fun send(text: String) {
-        NuclearLogStore.record(NuclearLogKind.WS_OUT, "raw", text)
+        NuclearLogStore.recordOutgoing(text)
         val queued = webSocket?.send(text) ?: false
         if (!queued) {
             NuclearLogStore.record(

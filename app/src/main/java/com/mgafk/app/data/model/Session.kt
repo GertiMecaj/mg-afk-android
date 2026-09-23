@@ -259,7 +259,15 @@ data class GardenEggSnapshot(
 @Serializable
 data class GardenPlantSnapshot(
     val tileId: Int = 0,
+    /**
+     * Legacy field used by the existing Garden UI/actions. Kept for backwards compatibility.
+     * It mirrors the server's explicit slotId when one is present.
+     */
     val slotIndex: Int = 0,
+    /** Position of this crop inside the plant's slots[] array. */
+    val growSlotIdx: Int = 0,
+    /** Explicit slotId carried by the server; this can differ from growSlotIdx. */
+    val slotId: Int = 0,
     val species: String = "",
     /** Whole 50..100, see CropSize. */
     val size: Int = com.mgafk.app.data.repository.CropSize.MIN,
