@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.io.File
+import java.io.Writer
 import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -20,9 +21,8 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Persistent wire/debug recorder used by the NUCLEAR screen.
  *
- * The on-disk file is append-only JSONL so a crash cannot corrupt the already-written history.
- * Raw WebSocket payloads are recorded exactly as they pass through RoomClient. Authentication
- * cookies are deliberately never handed to this recorder.
+ * The complete payload is written to disk. The UI only keeps a small, truncated rolling preview
+ * so high-frequency or very large server messages cannot freeze Compose or exhaust app memory.
  */
 enum class NuclearLogKind(val label: String) {
     WS_IN("WS IN"),
@@ -45,9 +45,13 @@ object NuclearLogStore {
     private const val TAG = "NuclearLogStore"
     private const val DIRECTORY = "nuclear"
     private const val FILE_NAME = "nuclear.jsonl"
-    private const val MAX_IN_MEMORY = 20_000
 
-    private val lock = Any()
+    // Deliberately small. The complete log remains on disk and is streamed during export.
+    private const val MAX_UI_ENTRIES = 600
+    private const val MAX_UI_PAYLOAD_CHARS = 12_000
+
+    private val uiLock = Any()
+    private val fileLock = Any()
     private val nextId = AtomicLong(0L)
     private val writer = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "mgafk-nuclear-log").apply { isDaemon = true }
@@ -62,49 +66,44 @@ object NuclearLogStore {
     val isInitialized: Boolean
         get() = logFile != null
 
+    /**
+     * Startup must stay cheap even if a previous run produced a very large trace.
+     * Existing history is intentionally not parsed here; Export All streams it directly from disk.
+     */
     fun initialize(context: Context) {
         if (logFile != null) return
-        synchronized(lock) {
+        synchronized(fileLock) {
             if (logFile != null) return
             val directory = File(context.applicationContext.filesDir, DIRECTORY).apply { mkdirs() }
-            val file = File(directory, FILE_NAME)
-            logFile = file
-
-            val loaded = if (file.exists()) {
-                runCatching {
-                    file.useLines { lines ->
-                        lines.mapNotNull(::decode).toList()
-                    }
-                }.onFailure {
-                    Log.e(TAG, "Unable to load persisted NUCLEAR logs", it)
-                }.getOrDefault(emptyList())
-            } else {
-                emptyList()
-            }
-
-            nextId.set(loaded.maxOfOrNull { it.id } ?: 0L)
-            _entries.value = loaded.takeLast(MAX_IN_MEMORY)
+            logFile = File(directory, FILE_NAME)
         }
     }
 
     fun record(kind: NuclearLogKind, label: String, payload: String = "") {
         val file = logFile ?: return
-        val entry = NuclearLogEntry(
+        val diskEntry = NuclearLogEntry(
             id = nextId.incrementAndGet(),
             timestampMs = System.currentTimeMillis(),
             kind = kind,
             label = label,
             payload = payload,
         )
+        val uiEntry = diskEntry.copy(payload = payloadForUi(payload))
 
-        synchronized(lock) {
-            _entries.value = (_entries.value + entry).takeLast(MAX_IN_MEMORY)
+        synchronized(uiLock) {
+            val current = _entries.value
+            _entries.value = if (current.size < MAX_UI_ENTRIES) {
+                current + uiEntry
+            } else {
+                current.drop(current.size - MAX_UI_ENTRIES + 1) + uiEntry
+            }
         }
 
+        // Never do file I/O on the socket callback or Compose thread.
         writer.execute {
             runCatching {
-                synchronized(lock) {
-                    file.appendText(encode(entry) + "\n")
+                synchronized(fileLock) {
+                    file.appendText(encode(diskEntry) + "\n")
                 }
             }.onFailure {
                 Log.e(TAG, "Unable to persist NUCLEAR log", it)
@@ -124,13 +123,12 @@ object NuclearLogStore {
     }
 
     fun clear() {
-        synchronized(lock) {
+        synchronized(uiLock) {
             _entries.value = emptyList()
-            nextId.set(0L)
         }
         writer.execute {
             runCatching {
-                synchronized(lock) {
+                synchronized(fileLock) {
                     logFile?.writeText("")
                 }
             }.onFailure {
@@ -140,47 +138,68 @@ object NuclearLogStore {
     }
 
     /**
-     * Builds a human-readable text export from the complete persisted history, not just the
-     * in-memory UI window. Passing null/empty filters exports everything.
+     * Streams the full persisted history directly to the destination writer.
+     * This avoids creating one enormous String/List when a trace has been running for hours.
      */
-    fun buildExportText(
+    fun writeExport(
+        destination: Writer,
         query: String = "",
         kind: NuclearLogKind? = null,
-    ): String {
+    ) {
         val normalizedQuery = query.trim()
-        val all = readAllPersisted()
-        val filtered = all.filter { entry ->
-            (kind == null || entry.kind == kind) &&
-                (normalizedQuery.isBlank() ||
-                    entry.label.contains(normalizedQuery, ignoreCase = true) ||
-                    entry.payload.contains(normalizedQuery, ignoreCase = true))
+        destination.appendLine("MG AFK — NUCLEAR LOG EXPORT")
+        destination.appendLine("Generated: ${Instant.now()}")
+        if (kind != null) destination.appendLine("Kind: ${kind.label}")
+        if (normalizedQuery.isNotBlank()) destination.appendLine("Search: $normalizedQuery")
+        destination.appendLine("============================================================")
+
+        val file = logFile
+        if (file == null || !file.exists()) {
+            _entries.value.forEach { entry ->
+                if (matches(entry, normalizedQuery, kind)) writeEntry(destination, entry)
+            }
+            return
         }
 
-        return buildString {
-            appendLine("MG AFK — NUCLEAR LOG EXPORT")
-            appendLine("Generated: ${Instant.now()}")
-            appendLine("Entries: ${filtered.size}")
-            if (kind != null) appendLine("Kind: ${kind.label}")
-            if (normalizedQuery.isNotBlank()) appendLine("Search: $normalizedQuery")
-            appendLine("============================================================")
-            filtered.forEach { entry ->
-                appendLine("[${Instant.ofEpochMilli(entry.timestampMs)}] [${entry.kind.label}] ${entry.label}")
-                if (entry.payload.isNotEmpty()) appendLine(entry.payload)
-                appendLine("------------------------------------------------------------")
+        synchronized(fileLock) {
+            runCatching {
+                file.useLines { lines ->
+                    lines.forEach { line ->
+                        val entry = decode(line) ?: return@forEach
+                        if (matches(entry, normalizedQuery, kind)) {
+                            writeEntry(destination, entry)
+                        }
+                    }
+                }
+            }.onFailure {
+                Log.e(TAG, "Unable to stream NUCLEAR export", it)
+                destination.appendLine("[EXPORT ERROR] ${it.message ?: it::class.java.simpleName}")
             }
         }
     }
 
-    private fun readAllPersisted(): List<NuclearLogEntry> {
-        val file = logFile ?: return _entries.value
-        return runCatching {
-            synchronized(lock) {
-                if (!file.exists()) return@synchronized emptyList()
-                file.useLines { lines -> lines.mapNotNull(::decode).toList() }
-            }
-        }.onFailure {
-            Log.e(TAG, "Unable to read NUCLEAR export", it)
-        }.getOrElse { _entries.value }
+    private fun payloadForUi(payload: String): String {
+        if (payload.length <= MAX_UI_PAYLOAD_CHARS) return payload
+        return payload.take(MAX_UI_PAYLOAD_CHARS) +
+            "\n… [UI preview truncated; full payload is preserved in Export All]"
+    }
+
+    private fun matches(
+        entry: NuclearLogEntry,
+        query: String,
+        kind: NuclearLogKind?,
+    ): Boolean =
+        (kind == null || entry.kind == kind) &&
+            (query.isBlank() ||
+                entry.label.contains(query, ignoreCase = true) ||
+                entry.payload.contains(query, ignoreCase = true))
+
+    private fun writeEntry(destination: Writer, entry: NuclearLogEntry) {
+        destination.appendLine(
+            "[${Instant.ofEpochMilli(entry.timestampMs)}] [${entry.kind.label}] ${entry.label}"
+        )
+        if (entry.payload.isNotEmpty()) destination.appendLine(entry.payload)
+        destination.appendLine("------------------------------------------------------------")
     }
 
     private fun encode(entry: NuclearLogEntry): String =
