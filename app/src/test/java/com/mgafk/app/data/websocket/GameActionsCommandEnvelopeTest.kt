@@ -66,6 +66,20 @@ class GameActionsCommandEnvelopeTest {
      * item will carry, and the reducer needs it to build that item. A harvest without one
      * is rejected while every other action keeps working.
      */
+    @Test fun `mutation potion preserves exact crop addressing and mutation`() {
+        sequencer.seed(20)
+
+        actions.mutationPotion(tileObjectIdx = 7, growSlotIdx = 1, mutation = "Frozen")
+
+        val msg = lastMessage()
+        assertWrapped("MutationPotion")
+        assertEquals(21L, msg["commandSequence"]?.jsonPrimitive?.longOrNull)
+        val command = lastCommand()
+        assertEquals(7, command["tileObjectIdx"]?.jsonPrimitive?.intOrNull)
+        assertEquals(1, command["growSlotIdx"]?.jsonPrimitive?.intOrNull)
+        assertEquals("Frozen", command["mutation"]?.jsonPrimitive?.contentOrNull)
+    }
+
     @Test fun `harvest mints the id the produce item will carry`() {
         actions.harvestCrop(slot = 12, slotsIndex = 3)
         val mintedId = lastCommand()["cropItemId"]?.jsonPrimitive?.contentOrNull
