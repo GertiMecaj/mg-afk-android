@@ -85,9 +85,8 @@ fun NuclearLogsCard() {
             val exportQuery = if (useFiltered) query else ""
             val exportKind = if (useFiltered) kind else null
             scope.launch(Dispatchers.IO) {
-                val text = NuclearLogStore.buildExportText(exportQuery, exportKind)
                 context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
-                    writer.write(text)
+                    NuclearLogStore.writeExport(writer, exportQuery, exportKind)
                 }
             }
         }
@@ -199,7 +198,7 @@ fun NuclearLogsCard() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "The on-screen list keeps the most recent 20,000 records in memory. Export All reads the complete persisted log file.",
+            text = "The on-screen list keeps a lightweight rolling preview. Export All streams the complete persisted log file.",
             color = TextMuted,
             fontSize = 10.sp,
         )

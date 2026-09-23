@@ -12,7 +12,6 @@ object AppLog {
     private val isDebug = BuildConfig.DEBUG
 
     fun d(tag: String, message: String) {
-        NuclearLogStore.recordApp("DEBUG", tag, message)
         if (isDebug) Log.d(tag, message)
     }
 

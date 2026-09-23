@@ -254,6 +254,7 @@ fun MainScreen(
                                         session = session,
                                         state = state,
                                         viewModel = viewModel,
+                                        isVisible = isVisible,
                                         onLoginRequest = onLoginRequest,
                                         onPlayRequest = onPlayRequest,
                                     )
@@ -549,6 +550,7 @@ private fun SectionContent(
     session: Session,
     state: com.mgafk.app.ui.UiState,
     viewModel: MainViewModel,
+    isVisible: Boolean,
     onLoginRequest: (sessionId: String) -> Unit,
     onPlayRequest: (sessionId: String, cookie: String, room: String, gameUrl: String) -> Unit = { _, _, _, _ -> },
 ) {
@@ -733,7 +735,9 @@ private fun SectionContent(
             )
         }
         NavSection.NUCLEAR -> {
-            NuclearLogsCard()
+            // This screen is intentionally not kept alive off-screen. A live collector here
+            // would force a hidden Compose tree to recompose on every WebSocket packet.
+            if (isVisible) NuclearLogsCard()
         }
         NavSection.STORAGE -> {
             SectionTip(
