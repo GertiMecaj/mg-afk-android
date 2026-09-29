@@ -21,7 +21,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
             var crop=items.OfType<JsonObject>().FirstOrDefault(x=>Str(x,"species")==food && (Str(x,"itemType")=="Produce"||Str(x,"type")=="Produce"));
             if(crop is not null && (Str(crop,"id")??Str(crop,"itemId")) is string cropId)
                 yield return Intent("D",ProjectPriority.DEmergencyFeed,[new(ResourceKind.Pet,id),new(ResourceKind.Inventory,cropId)],
-                    ()=>Confirmed(a=>a.GameAsync("FeedPet",new(){["petItemId"]=id,["cropItemId"]=cropId}),x=>!x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>(n as JsonObject)?["id"]?.GetValue<string>()==cropId)));
+                    ()=>Confirmed(a=>a.FeedPetAsync(id,cropId),x=>!x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>(n as JsonObject)?["id"]?.GetValue<string>()==cropId)));
         }
 
         // F: weather team, otherwise Default. Temporary B/E teams restore by recalculating this at completion.
@@ -77,7 +77,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         foreach(var id in cfg.ShopItems)
             if(ShopContains(s,id))
                 yield return Intent("C",ProjectPriority.CShop,[new(ResourceKind.Shop,id)],
-                    ()=>Confirmed(a=>a.PurchaseShopItemAsync("tool","Tool","toolId",id),x=>x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>Str(n as JsonObject,id)==id)));
+                    ()=>Confirmed(a=>a.PurchaseShopItemAsync("tool","Tool","toolId",id),x=>x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>n is JsonObject o && (Str(o,"id")==id || Str(o,"itemId")==id || Str(o,"toolId")==id || Str(o,"decorId")==id))));
     }
 
     private AutomationIntent Intent(string p,int pri,IReadOnlyList<ResourceKey> r,Func<Task<bool>> run)=>new(p,pri,r,_=>run());
