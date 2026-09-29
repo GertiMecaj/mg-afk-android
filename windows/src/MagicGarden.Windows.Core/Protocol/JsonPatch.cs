@@ -39,15 +39,13 @@ public static class JsonPatch
             return;
         }
 
-        if (current is JsonArray arr && (key == "-" || int.TryParse(key, out var index)))
+        if (current is JsonArray arr && int.TryParse(key, out var index))
         {
-            if (key == "-") index = arr.Count;
             if (leaf)
             {
                 if (op == "remove") { if (index >= 0 && index < arr.Count) arr.RemoveAt(index); return; }
                 while (arr.Count < index) arr.Add(null);
-                if (op == "add" && index <= arr.Count) arr.Insert(index, value?.DeepClone());
-                else if (index < arr.Count) arr[index] = value?.DeepClone();
+                if (index < arr.Count) arr[index] = value?.DeepClone();
                 else arr.Add(value?.DeepClone());
                 return;
             }
@@ -62,5 +60,5 @@ public static class JsonPatch
         }
     }
 
-    private static bool IsIndex(string s) => s == "-" || int.TryParse(s, out _);
+    private static bool IsIndex(string s) => int.TryParse(s, out _);
 }
