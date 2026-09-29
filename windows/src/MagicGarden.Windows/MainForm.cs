@@ -5,147 +5,89 @@ namespace MagicGarden.Windows;
 
 public sealed class MainForm : Form
 {
-    const string DefaultHost = "magicgarden.gg";
-    const string DefaultVersion = "db34dc9";
-    const string DefaultUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+    const string DefaultHost="magicgarden.gg";
+    const string DefaultUa="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+    readonly TextBox host=new(){Text=DefaultHost,PlaceholderText="Host",Dock=DockStyle.Top};
+    readonly TextBox version=new(){PlaceholderText="Game version (required)",Dock=DockStyle.Top};
+    readonly TextBox room=new(){PlaceholderText="Room ID (required)",Dock=DockStyle.Top};
+    readonly TextBox cookie=new(){PlaceholderText="mc_jwt cookie",Dock=DockStyle.Top,UseSystemPasswordChar=true};
+    readonly Button connect=new(){Text="CONNECT",Dock=DockStyle.Top,Height=38};
+    readonly Label status=new(){Text="DISCONNECTED",Dock=DockStyle.Top,Height=28};
+    readonly TabControl tabs=new(){Dock=DockStyle.Fill};
+    readonly TextBox log=new(){Dock=DockStyle.Bottom,Multiline=true,ReadOnly=true,Height=150,ScrollBars=ScrollBars.Vertical};
+    readonly RoomClient client=new(); CancellationTokenSource? automationCts; AutomationRuntime? runtime; ProjectsPlanner? planner; bool sessionActive;
+    readonly CheckedListBox plant=new(){Dock=DockStyle.Fill,CheckOnClick=true};
+    readonly CheckedListBox harvest=new(){Dock=DockStyle.Fill,CheckOnClick=true};
+    readonly CheckedListBox shop=new(){Dock=DockStyle.Fill,CheckOnClick=true};
+    readonly CheckedListBox eggs=new(){Dock=DockStyle.Fill,CheckOnClick=true};
+    readonly TextBox feedMap=new(){Dock=DockStyle.Fill,Multiline=true,ScrollBars=ScrollBars.Vertical,PlaceholderText="petItemId=FoodSpecies, one per line"};
+    readonly TextBox defaultTeam=new(){Dock=DockStyle.Top,PlaceholderText="Default team ID"};
+    readonly TextBox sellTeam=new(){Dock=DockStyle.Top,PlaceholderText="Sell Boost team ID"};
+    readonly TextBox hatchTeam=new(){Dock=DockStyle.Top,PlaceholderText="Hatch mutation team ID"};
+    readonly TextBox weatherTeams=new(){Dock=DockStyle.Fill,Multiline=true,PlaceholderText="weather=teamId, one per line"};
+    readonly NumericUpDown capacity=new(){Dock=DockStyle.Top,Minimum=0,Maximum=100000,Value=100};
+    readonly CheckBox dryRun=new(){Text="DRY RUN / SIMULATION MODE",Dock=DockStyle.Top,Checked=true,Height=30};
+    readonly Label diag=new(){Dock=DockStyle.Fill,AutoSize=false,Font=new Font(FontFamily.GenericMonospace,10),Padding=new Padding(10)};
 
-    readonly TextBox host = new() { Text = DefaultHost, PlaceholderText = "Host", Dock = DockStyle.Top };
-    readonly TextBox version = new() { PlaceholderText = "Game version (required)", Dock = DockStyle.Top };
-    readonly TextBox room = new() { PlaceholderText = "Room ID (required)", Dock = DockStyle.Top };
-    readonly TextBox cookie = new() { PlaceholderText = "mc_jwt cookie", Dock = DockStyle.Top, UseSystemPasswordChar = true };
-    readonly Button connect = new() { Text = "CONNECT", Dock = DockStyle.Top, Height = 38 };
-    readonly Label status = new() { Text = "DISCONNECTED", Dock = DockStyle.Top, Height = 28 };
-    readonly TabControl tabs = new() { Dock = DockStyle.Fill };
-    readonly TextBox log = new() { Dock = DockStyle.Bottom, Multiline = true, ReadOnly = true, Height = 150, ScrollBars = ScrollBars.Vertical };
-
-    readonly RoomClient client = new();
-    CancellationTokenSource? automationCts;
-    AutomationRuntime? runtime;
-    bool sessionActive;
-    string documentId = "";
-
-    public MainForm()
-    {
-        Text = "Magic Garden"; Width = 1000; Height = 720; StartPosition = FormStartPosition.CenterScreen;
-        Controls.Add(tabs); Controls.Add(log); Controls.Add(status); Controls.Add(connect);
-        Controls.Add(cookie); Controls.Add(room); Controls.Add(version); Controls.Add(host);
-        foreach (var x in new[] { "A — Auto Plant", "B — Harvest / Sell", "C — Auto Shop", "D — Emergency Feed", "E — Eggs", "F — Pet Teams" })
-            tabs.TabPages.Add(MakePage(x));
-
-        connect.Click += async (_, __) => await Toggle();
-        client.ProtocolWarning += x => Ui(() => Append("WARN " + x));
-        client.MessageApplied += _ => Ui(() =>
-        {
-            status.Text = client.IsAuthoritativeReady ? "CONNECTED — AUTHORITATIVE STATE" : "SYNCING";
-        });
+    public MainForm(){
+        Text="Magic Garden";Width=1100;Height=780;StartPosition=FormStartPosition.CenterScreen;
+        Controls.Add(tabs);Controls.Add(log);Controls.Add(status);Controls.Add(connect);Controls.Add(cookie);Controls.Add(room);Controls.Add(version);Controls.Add(host);
+        tabs.TabPages.Add(ListPage("A — Auto Plant",plant,"Enabled seed species"));
+        tabs.TabPages.Add(ListPage("B — Harvest / Sell",harvest,"Enabled crop species to harvest",capacity,sellTeam));
+        tabs.TabPages.Add(ListPage("C — Auto Shop",shop,"Enabled shop item IDs"));
+        tabs.TabPages.Add(TextPage("D — Emergency Feed",feedMap,"petItemId=FoodSpecies. Triggers at ≤10% hunger."));
+        tabs.TabPages.Add(ListPage("E — Eggs",eggs,"Enabled egg IDs",hatchTeam));
+        tabs.TabPages.Add(TextPage("F — Pet Teams",weatherTeams,"weather=teamId",defaultTeam));
+        var d=new TabPage("Diagnostics");d.Controls.Add(diag);d.Controls.Add(dryRun);tabs.TabPages.Add(d);
+        connect.Click+=async(_,__)=>await Toggle();
+        client.ProtocolWarning+=x=>Ui(()=>Append("WARN "+x));
+        client.MessageApplied+=_=>Ui(OnState);
     }
-
-    TabPage MakePage(string title)
-    {
-        var p = new TabPage(title);
-        p.Controls.Add(new Label { Text = title + " configuration", Dock = DockStyle.Top, Height = 35 });
-        return p;
+    static TabPage ListPage(string title,CheckedListBox list,string help,params Control[] top){
+        var p=new TabPage(title);p.Controls.Add(list);foreach(var x in top.Reverse())p.Controls.Add(x);p.Controls.Add(new Label{Text=help,Dock=DockStyle.Top,Height=28});return p;
     }
-
-    async Task Toggle()
-    {
-        // Disconnect must work at every stage: connecting, socket-open, syncing or welcomed.
-        if (sessionActive)
-        {
-            connect.Enabled = false;
-            try
-            {
-                automationCts?.Cancel();
-                automationCts?.Dispose();
-                automationCts = null;
-                runtime = null;
-                await client.DisconnectAsync();
-                Append("Disconnected.");
-            }
-            finally
-            {
-                sessionActive = false;
-                status.Text = "DISCONNECTED";
-                connect.Text = "CONNECT";
-                connect.Enabled = true;
-            }
-            return;
+    static TabPage TextPage(string title,Control body,string help,params Control[] top){
+        var p=new TabPage(title);p.Controls.Add(body);foreach(var x in top.Reverse())p.Controls.Add(x);p.Controls.Add(new Label{Text=help,Dock=DockStyle.Top,Height=28});return p;
+    }
+    async Task Toggle(){
+        if(sessionActive){connect.Enabled=false;try{automationCts?.Cancel();automationCts?.Dispose();automationCts=null;runtime=null;planner=null;await client.DisconnectAsync();Append("Disconnected.");}finally{sessionActive=false;status.Text="DISCONNECTED";connect.Text="CONNECT";connect.Enabled=true;}return;}
+        var h=host.Text.Trim();var v=version.Text.Trim();var roomId=room.Text.Trim();var rawCookie=cookie.Text.Trim();
+        if(string.IsNullOrWhiteSpace(h)||string.IsNullOrWhiteSpace(v)||string.IsNullOrWhiteSpace(roomId)||string.IsNullOrWhiteSpace(rawCookie)){Append("Host, game version, room ID and mc_jwt cookie are required.");return;}
+        var uri=BuildSocketUri(h,v,roomId,Guid.NewGuid().ToString(),1,"navigate");
+        var normalized=rawCookie.Contains("mc_jwt",StringComparison.OrdinalIgnoreCase)?rawCookie:"mc_jwt="+rawCookie;
+        status.Text="CONNECTING";connect.Text="DISCONNECT";connect.Enabled=false;sessionActive=true;
+        try{await client.ConnectAsync(new SessionOptions(uri,normalized,DefaultUa,"https://"+h));runtime=new AutomationRuntime(client);runtime.Controller.Log+=Append;planner=new ProjectsPlanner(client,runtime.Confirmation);automationCts=new();_=runtime.Controller.RunAsync(automationCts.Token);status.Text="SYNCING — WAITING FOR WELCOME";Append("Socket opened; SocketOpened sent; waiting for authoritative Welcome.");}
+        catch(Exception e){Append("CONNECT FAILED "+e.Message);await client.DisconnectAsync();sessionActive=false;status.Text="DISCONNECTED";connect.Text="CONNECT";}
+        finally{connect.Enabled=true;}
+    }
+    void OnState(){
+        status.Text=client.IsAuthoritativeReady?"CONNECTED — AUTHORITATIVE STATE":"SYNCING";
+        PopulateFromState();
+        if(runtime is not null&&planner is not null){
+            var cfg=Settings();
+            var intents=planner.Build(cfg).ToArray();
+            runtime.Controller.ReplaceIntents(dryRun.Checked?intents.Select(Simulate):intents);
+            diag.Text=$"Connection: {status.Text}\r\nPlayer: {client.PlayerId}\r\nState revision: {client.State.Revision}\r\nWeather: {client.State.Weather()}\r\nInventory: {client.State.InventoryItems(client.PlayerId).Count}/{capacity.Value}\r\nQueued decisions: {intents.Length}\r\nDry run: {dryRun.Checked}";
         }
-
-        var h = host.Text.Trim();
-        var v = version.Text.Trim();
-        var roomId = room.Text.Trim();
-        var rawCookie = cookie.Text.Trim();
-
-        if (string.IsNullOrWhiteSpace(h) || string.IsNullOrWhiteSpace(v) || string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(rawCookie))
-        {
-            Append("Host, game version, room ID and mc_jwt cookie are required.");
-            return;
-        }
-
-        documentId = Guid.NewGuid().ToString();
-        var uri = BuildSocketUri(h, v, roomId, documentId, 1, "navigate");
-        var normalizedCookie = rawCookie.Contains("mc_jwt", StringComparison.OrdinalIgnoreCase) ? rawCookie : "mc_jwt=" + rawCookie;
-
-        status.Text = "CONNECTING";
-        connect.Text = "DISCONNECT";
-        connect.Enabled = false;
-        sessionActive = true;
-
-        try
-        {
-            await client.ConnectAsync(new SessionOptions(uri, normalizedCookie, DefaultUa, "https://" + h));
-            runtime = new AutomationRuntime(client);
-            runtime.Controller.Log += Append;
-            automationCts = new CancellationTokenSource();
-            _ = runtime.Controller.RunAsync(automationCts.Token);
-            status.Text = "SYNCING — WAITING FOR WELCOME";
-            Append("Socket opened; SocketOpened sent; waiting for authoritative Welcome.");
-        }
-        catch (Exception e)
-        {
-            Append("CONNECT FAILED " + e.Message);
-            await client.DisconnectAsync();
-            sessionActive = false;
-            status.Text = "DISCONNECTED";
-            connect.Text = "CONNECT";
-        }
-        finally { connect.Enabled = true; }
     }
-
-    static Uri BuildSocketUri(string host, string version, string room, string documentId, int attempt, string navigationType)
-    {
-        // Exact Android UrlBuilder parameter values: JSON-encoded strings, then URL encoded.
-        var query = new[]
-        {
-            Pair("surface", "\"web\""),
-            Pair("platform", "\"desktop\""),
-            Pair("version", "\"" + version + "\""),
-            Pair("capabilities", "\"fbo_mipmap_unsupported\""),
-            Pair("locale", "\"en\""),
-            Pair("clientDocumentId", "\"" + documentId + "\""),
-            Pair("clientConnectionAttempt", attempt.ToString()),
-            Pair("clientNavigationType", "\"" + navigationType + "\""),
-            Pair("clientVisibilityState", "\"visible\"")
-        };
-        return new Uri($"wss://{host}/version/{Uri.EscapeDataString(version)}/api/rooms/{Uri.EscapeDataString(room)}/connect?{string.Join("&", query)}");
+    AutomationIntent Simulate(AutomationIntent i)=>new(i.Project,i.Priority,i.Resources,_=>{Append($"SIMULATE {i.Project}: {string.Join(", ",i.Resources.Select(x=>$"{x.Kind}:{x.Id}"))}");return Task.FromResult(false);});
+    ProjectSettings Settings()=>new(client.PlayerId,null,Checked(plant),Checked(harvest),Checked(shop),Checked(eggs),Pairs(feedMap.Text),Pairs(weatherTeams.Text),defaultTeam.Text.Trim(),Null(sellTeam.Text),Null(hatchTeam.Text),(int)capacity.Value);
+    static IReadOnlySet<string> Checked(CheckedListBox b)=>b.CheckedItems.Cast<object>().Select(x=>x.ToString()!).ToHashSet(StringComparer.Ordinal);
+    static IReadOnlyDictionary<string,string> Pairs(string text)=>text.Split('\n',StringSplitOptions.RemoveEmptyEntries).Select(x=>x.Trim()).Where(x=>x.Contains('=')).Select(x=>x.Split('=',2)).Where(x=>x.Length==2).ToDictionary(x=>x[0].Trim(),x=>x[1].Trim(),StringComparer.Ordinal);
+    static string? Null(string s)=>string.IsNullOrWhiteSpace(s)?null:s.Trim();
+    void PopulateFromState(){
+        AddDistinct(plant,StateViews.Crops(client.State,client.PlayerId).Select(x=>Str(x.crop,"species")));
+        AddDistinct(harvest,StateViews.Crops(client.State,client.PlayerId).Select(x=>Str(x.crop,"species")));
+        var shops=client.State.Shops().ToJsonString();
+        // IDs remain manually addable; state-discovered identifiers are offered when recognizable.
+        try{var root=System.Text.Json.Nodes.JsonNode.Parse(shops);var ids=Desc(root).SelectMany(o=>new[]{"species","toolId","eggId","decorId"}.Select(k=>Str(o,k)));AddDistinct(shop,ids);AddDistinct(eggs,Desc(root).Select(o=>Str(o,"eggId")));}catch{}
     }
-
-    static string Pair(string key, string value) => Uri.EscapeDataString(key) + "=" + Uri.EscapeDataString(value);
-
-
-    void Append(string s)
-    {
-        if (InvokeRequired) { BeginInvoke(() => Append(s)); return; }
-        log.AppendText($"[{DateTime.Now:T}] {s}{Environment.NewLine}");
-    }
-
-    void Ui(Action a) { if (InvokeRequired) BeginInvoke(a); else a(); }
-
-    protected override async void OnFormClosed(FormClosedEventArgs e)
-    {
-        automationCts?.Cancel();
-        await client.DisposeAsync();
-        base.OnFormClosed(e);
-    }
+    static IEnumerable<System.Text.Json.Nodes.JsonObject> Desc(System.Text.Json.Nodes.JsonNode? n){if(n is System.Text.Json.Nodes.JsonObject o){yield return o;foreach(var v in o)foreach(var z in Desc(v.Value))yield return z;}else if(n is System.Text.Json.Nodes.JsonArray a)foreach(var v in a)foreach(var z in Desc(v))yield return z;}
+    static string? Str(System.Text.Json.Nodes.JsonObject? o,string k)=>o?[k] is System.Text.Json.Nodes.JsonValue v&&v.TryGetValue<string>(out var x)?x:null;
+    static void AddDistinct(CheckedListBox b,IEnumerable<string?> vals){var have=b.Items.Cast<object>().Select(x=>x.ToString()).ToHashSet();foreach(var x in vals.Where(x=>!string.IsNullOrWhiteSpace(x)).Distinct())if(have.Add(x))b.Items.Add(x);}
+    static Uri BuildSocketUri(string h,string v,string r,string d,int a,string nav){var q=new[]{Pair("surface","\"web\""),Pair("platform","\"desktop\""),Pair("version","\""+v+"\""),Pair("capabilities","\"fbo_mipmap_unsupported\""),Pair("locale","\"en\""),Pair("clientDocumentId","\""+d+"\""),Pair("clientConnectionAttempt",a.ToString()),Pair("clientNavigationType","\""+nav+"\""),Pair("clientVisibilityState","\"visible\"")};return new Uri($"wss://{h}/version/{Uri.EscapeDataString(v)}/api/rooms/{Uri.EscapeDataString(r)}/connect?{string.Join("&",q)}");}
+    static string Pair(string k,string v)=>Uri.EscapeDataString(k)+"="+Uri.EscapeDataString(v);
+    void Append(string s){if(InvokeRequired){BeginInvoke(()=>Append(s));return;}log.AppendText($"[{DateTime.Now:T}] {s}{Environment.NewLine}");}
+    void Ui(Action a){if(InvokeRequired)BeginInvoke(a);else a();}
+    protected override async void OnFormClosed(FormClosedEventArgs e){automationCts?.Cancel();await client.DisposeAsync();base.OnFormClosed(e);}
 }
