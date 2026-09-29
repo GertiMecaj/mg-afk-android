@@ -165,17 +165,17 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         return teamId;
     }
     private static (string id,string[] petIds)? FindTeam(AuthoritativeGameState s,ProjectSettings c,string name){
-        var d=s.UserData(c.PlayerId,c.DatabaseId);if(d?["petTeams"] is not JsonArray a)return null;
+        var d=s.PlayerData(c.PlayerId,c.DatabaseId);if(d?["petTeams"] is not JsonArray a)return null;
         foreach(var t in a.OfType<JsonObject>())if(Str(t,"name")==name){var id=Str(t,"id")??Str(t,"teamId");if(id is null)continue;var p=(t["petIds"] as JsonArray)?.Select(x=>x?.GetValue<string>()??"").Where(x=>x.Length>0).ToArray()??[];return(id,p);}
         return null;
     }
     private static bool TeamMatches(AuthoritativeGameState s,ProjectSettings c,string id,string[] pets){
-        var d=s.UserData(c.PlayerId,c.DatabaseId);if(d?["petTeams"] is not JsonArray a)return false;
+        var d=s.PlayerData(c.PlayerId,c.DatabaseId);if(d?["petTeams"] is not JsonArray a)return false;
         foreach(var t in a.OfType<JsonObject>())if(Str(t,"id")==id||Str(t,"teamId")==id){var p=(t["petIds"] as JsonArray)?.Select(x=>x?.GetValue<string>()??"").Where(x=>x.Length>0).ToArray()??[];return p.SequenceEqual(pets,StringComparer.Ordinal);}return false;
     }
     private async Task RestoreTeam(ProjectSettings c){var w=client.State.Weather();var t=!string.IsNullOrWhiteSpace(w)&&c.WeatherTeams.TryGetValue(w!,out var x)?x:c.DefaultTeamId;if(!string.IsNullOrWhiteSpace(t)&&!TeamIsActive(client.State,c,t))await Confirmed(a=>a.ApplyPetTeamAsync(t),s=>TeamIsActive(s,c,t))();}
     private static bool TeamIsActive(AuthoritativeGameState s,ProjectSettings c,string teamId){
-        var d=s.UserData(c.PlayerId,c.DatabaseId);if(d is null)return false;
+        var d=s.PlayerData(c.PlayerId,c.DatabaseId);if(d is null)return false;
         foreach(var k in new[]{"activePetTeamId","selectedPetTeamId","petTeamId"})if(d[k]?.GetValue<string>()==teamId)return true;
         if(d["petTeams"] is JsonArray teams)foreach(var t in teams.OfType<JsonObject>())if((Str(t,"id")==teamId||Str(t,"teamId")==teamId)&&(t["isActive"]?.GetValue<bool>()==true||t["active"]?.GetValue<bool>()==true))return true;
         return false;
