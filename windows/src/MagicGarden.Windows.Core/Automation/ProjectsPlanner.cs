@@ -47,7 +47,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         {
             var species=Str(crop,"species"); if(species is null || !cfg.HarvestSpecies.Contains(species) || !Mature(crop))continue;
             yield return Intent("B-harvest",ProjectPriority.BHarvest,[new(ResourceKind.GardenPlot,tile.ToString()),new(ResourceKind.Inventory,"capacity")],
-                ()=>Confirmed(a=>a.HarvestCropAsync(tile,grow),x=>x.Revision>s.Revision));
+                ()=>Confirmed(a=>a.HarvestCropAsync(tile,grow),_=>true));
         }
 
         // E: enabled eggs ignore the 13-plot reserve. Existing owned/growing egg prevents duplicate buy intent.
