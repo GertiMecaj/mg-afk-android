@@ -44,4 +44,12 @@ public class ProtocolParityTests
         state.Apply(JsonNode.Parse("""{"type":"Welcome","fullState":{"data":{},"child":{"data":{"userSlots":[{"userId":"p1","data":{"inventory":{"items":[]}}}]}}}}""")!.AsObject());
         Assert.NotNull(state.ResolveUserSlot("p1"));
     }
+
+    [Fact] public void Keyed_garden_tiles_preserve_tile_id()
+    {
+        var state=new AuthoritativeGameState();
+        var m=new JsonObject { ["type"]="Welcome", ["fullState"]=new JsonObject { ["data"]=new JsonObject(), ["child"]=new JsonObject { ["data"]=new JsonObject { ["userSlots"]=new JsonArray(new JsonObject { ["userId"]="p1", ["data"]=new JsonObject { ["garden"]=new JsonObject { ["tileObjects"]=new JsonObject { ["17"]=new JsonObject { ["objectType"]="plant", ["slots"]=new JsonArray(new JsonObject { ["species"]="Carrot" },new JsonObject { ["species"]="Carrot" }) } } }, ["inventory"]=new JsonObject { ["items"]=new JsonArray() } } }) } } } };
+        state.Apply(m);var crops=StateViews.Crops(state,"p1").ToArray();
+        Assert.Equal(2,crops.Length);Assert.All(crops,x=>Assert.Equal(17,x.tileObjectIdx));
+    }
 }
