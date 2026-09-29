@@ -1,3 +1,4 @@
+using Xunit;
 using System.Text.Json.Nodes;
 using MagicGarden.Windows.Core.Protocol;
 using MagicGarden.Windows.Core.State;
