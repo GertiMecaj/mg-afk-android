@@ -10,8 +10,8 @@ public sealed class MainForm : Form
     const string DefaultUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
 
     readonly TextBox host = new() { Text = DefaultHost, PlaceholderText = "Host", Dock = DockStyle.Top };
-    readonly TextBox version = new() { Text = DefaultVersion, PlaceholderText = "Game version", Dock = DockStyle.Top };
-    readonly TextBox room = new() { PlaceholderText = "Room ID (leave blank to generate)", Dock = DockStyle.Top };
+    readonly TextBox version = new() { PlaceholderText = "Game version (required)", Dock = DockStyle.Top };
+    readonly TextBox room = new() { PlaceholderText = "Room ID (required)", Dock = DockStyle.Top };
     readonly TextBox cookie = new() { PlaceholderText = "mc_jwt cookie", Dock = DockStyle.Top, UseSystemPasswordChar = true };
     readonly Button connect = new() { Text = "CONNECT", Dock = DockStyle.Top, Height = 38 };
     readonly Label status = new() { Text = "DISCONNECTED", Dock = DockStyle.Top, Height = 28 };
@@ -77,16 +77,10 @@ public sealed class MainForm : Form
         var roomId = room.Text.Trim();
         var rawCookie = cookie.Text.Trim();
 
-        if (string.IsNullOrWhiteSpace(h) || string.IsNullOrWhiteSpace(v) || string.IsNullOrWhiteSpace(rawCookie))
+        if (string.IsNullOrWhiteSpace(h) || string.IsNullOrWhiteSpace(v) || string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(rawCookie))
         {
-            Append("Host, game version and mc_jwt cookie are required.");
+            Append("Host, game version, room ID and mc_jwt cookie are required.");
             return;
-        }
-
-        if (string.IsNullOrWhiteSpace(roomId))
-        {
-            roomId = GenerateRoomId();
-            room.Text = roomId;
         }
 
         documentId = Guid.NewGuid().ToString();
@@ -139,15 +133,6 @@ public sealed class MainForm : Form
 
     static string Pair(string key, string value) => Uri.EscapeDataString(key) + "=" + Uri.EscapeDataString(value);
 
-    static string GenerateRoomId()
-    {
-        const string chars = "abcdefghijklmnopqrstuvwxyz";
-        Span<byte> bytes = stackalloc byte[10];
-        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
-        var result = new char[10];
-        for (var i = 0; i < result.Length; i++) result[i] = chars[bytes[i] % chars.Length];
-        return new string(result);
-    }
 
     void Append(string s)
     {
