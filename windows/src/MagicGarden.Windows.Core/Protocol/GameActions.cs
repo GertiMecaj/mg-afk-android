@@ -54,6 +54,8 @@ public sealed class GameActions
     public Task FeedPetAsync(string petItemId,string cropItemId,CancellationToken ct=default)=>GameAsync("FeedPet",new(){["petItemId"]=petItemId,["cropItemId"]=cropItemId},ct);
     public Task GrowEggAsync(int slot,string eggId,CancellationToken ct=default)=>GameAsync("GrowEgg",new(){["slot"]=slot,["eggId"]=eggId},ct);
     public Task HatchEggAsync(int slot,CancellationToken ct=default)=>GameAsync("HatchEgg",new(){["slot"]=slot},ct);
+    public Task SavePetTeamAsync(string teamId,string name,IEnumerable<string> petIds,bool isCreate,CancellationToken ct=default)=>
+        GameAsync("SavePetTeam",new(){["teamId"]=teamId,["isCreate"]=isCreate,["name"]=name,["petIds"]=new JsonArray(petIds.Select(x=>(JsonNode?)JsonValue.Create(x)).ToArray())},ct);
     public Task ApplyPetTeamAsync(string teamId,CancellationToken ct=default)=>GameAsync("ApplyPetTeam",new(){["teamId"]=teamId},ct);
     public Task PutItemInStorageAsync(string itemId,string storageId,CancellationToken ct=default)=>GameAsync("PutItemInStorage",new(){["itemId"]=itemId,["storageId"]=storageId},ct);
     public Task PurchaseShopItemAsync(string shop,string itemType,string idField,string itemId,CancellationToken ct=default)=>
