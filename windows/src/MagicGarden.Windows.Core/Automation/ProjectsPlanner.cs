@@ -65,7 +65,8 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
             yield return Intent("B-sell",ProjectPriority.BFullInventorySell,[new(ResourceKind.Sell,"all"),new(ResourceKind.PetTeam,"active")],
                 async ()=>{
                     if(!IsFull(cfg))return false;
-                    if(!string.IsNullOrWhiteSpace(cfg.SellBoostTeamId) && !TeamIsActive(client.State,cfg,cfg.SellBoostTeamId!) && !await Confirmed(a=>a.ApplyPetTeamAsync(cfg.SellBoostTeamId!),x=>TeamIsActive(x,cfg,cfg.SellBoostTeamId!))())return false;
+                    var sellTeam=await EnsureOptimizerTeam(cfg,"sell","MG-AUTO-SELL");
+                    if(!string.IsNullOrWhiteSpace(sellTeam) && !TeamIsActive(client.State,cfg,sellTeam!) && !await Confirmed(a=>a.ApplyPetTeamAsync(sellTeam!),x=>TeamIsActive(x,cfg,sellTeam!))())return false;
                     if(!IsFull(cfg)) { await RestoreTeam(cfg); return false; }
                     var sold=await Confirmed(a=>a.SellAllCropsAsync(),x=>x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Count<cfg.InventoryCapacity)();
                     await RestoreTeam(cfg); return sold;
@@ -88,7 +89,8 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
                 if(EggReady(pe.node))
                     yield return Intent("E-hatch",ProjectPriority.EHatchReady,[new(ResourceKind.GardenPlot,pe.slot.ToString()),new(ResourceKind.PetTeam,"active")],
                         async()=>{
-                            if(!string.IsNullOrWhiteSpace(cfg.HatchMutationTeamId) && !TeamIsActive(client.State,cfg,cfg.HatchMutationTeamId!) && !await Confirmed(a=>a.ApplyPetTeamAsync(cfg.HatchMutationTeamId!),x=>TeamIsActive(x,cfg,cfg.HatchMutationTeamId!))()) return false;
+                            var hatchTeam=await EnsureOptimizerTeam(cfg,"mutation","MG-AUTO-HATCH");
+                            if(!string.IsNullOrWhiteSpace(hatchTeam) && !TeamIsActive(client.State,cfg,hatchTeam!) && !await Confirmed(a=>a.ApplyPetTeamAsync(hatchTeam!),x=>TeamIsActive(x,cfg,hatchTeam!))()) return false;
                             var ok=await Confirmed(a=>a.HatchEggAsync(pe.slot),x=>FindPlantedEgg(x,cfg,egg) is null)();
                             await RestoreTeam(cfg); return ok;
                         });
@@ -148,6 +150,24 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         var before=client.State.Revision; await send(client.Actions); return await confirm.AfterAsync(before,ok,TimeSpan.FromSeconds(8),CancellationToken.None);
     };
     private bool IsFull(ProjectSettings c)=>c.InventoryCapacity>0&&client.State.InventoryItems(c.PlayerId,c.DatabaseId).Count>=c.InventoryCapacity;
+    private async Task<string?> EnsureOptimizerTeam(ProjectSettings c,string kind,string name){
+        var ranked=RankOwnedPets(client.State,c.PlayerId,c.DatabaseId,kind).Take(3).Select(x=>x.id).ToArray();
+        if(ranked.Length==0)return kind=="sell"?c.SellBoostTeamId:c.HatchMutationTeamId;
+        var existing=FindTeam(client.State,c,name);var teamId=existing?.id??Guid.NewGuid().ToString();
+        if(existing is null||!existing.Value.petIds.SequenceEqual(ranked,StringComparer.Ordinal)){
+            if(!await Confirmed(a=>a.SavePetTeamAsync(teamId,name,ranked,existing is null),s=>TeamMatches(s,c,teamId,ranked))())return null;
+        }
+        return teamId;
+    }
+    private static (string id,string[] petIds)? FindTeam(AuthoritativeGameState s,ProjectSettings c,string name){
+        var d=s.UserData(c.PlayerId,c.DatabaseId);if(d?["petTeams"] is not JsonArray a)return null;
+        foreach(var t in a.OfType<JsonObject>())if(Str(t,"name")==name){var id=Str(t,"id")??Str(t,"teamId");if(id is null)continue;var p=(t["petIds"] as JsonArray)?.Select(x=>x?.GetValue<string>()??"").Where(x=>x.Length>0).ToArray()??[];return(id,p);}
+        return null;
+    }
+    private static bool TeamMatches(AuthoritativeGameState s,ProjectSettings c,string id,string[] pets){
+        var d=s.UserData(c.PlayerId,c.DatabaseId);if(d?["petTeams"] is not JsonArray a)return false;
+        foreach(var t in a.OfType<JsonObject>())if(Str(t,"id")==id||Str(t,"teamId")==id){var p=(t["petIds"] as JsonArray)?.Select(x=>x?.GetValue<string>()??"").Where(x=>x.Length>0).ToArray()??[];return p.SequenceEqual(pets,StringComparer.Ordinal);}return false;
+    }
     private async Task RestoreTeam(ProjectSettings c){var w=client.State.Weather();var t=!string.IsNullOrWhiteSpace(w)&&c.WeatherTeams.TryGetValue(w!,out var x)?x:c.DefaultTeamId;if(!string.IsNullOrWhiteSpace(t)&&!TeamIsActive(client.State,c,t))await Confirmed(a=>a.ApplyPetTeamAsync(t),s=>TeamIsActive(s,c,t))();}
     private static bool TeamIsActive(AuthoritativeGameState s,ProjectSettings c,string teamId){
         var d=s.UserData(c.PlayerId,c.DatabaseId);if(d is null)return false;
