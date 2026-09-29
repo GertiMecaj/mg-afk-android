@@ -51,6 +51,7 @@ public sealed class GameActions
         return GameAsync("HarvestCrop",p,ct);
     }
     public Task SellAllCropsAsync(CancellationToken ct=default)=>GameAsync("SellAllCrops",null,ct);
+    public Task FeedPetAsync(string petItemId,string cropItemId,CancellationToken ct=default)=>GameAsync("FeedPet",new(){["petItemId"]=petItemId,["cropItemId"]=cropItemId},ct);
     public Task GrowEggAsync(int slot,string eggId,CancellationToken ct=default)=>GameAsync("GrowEgg",new(){["slot"]=slot,["eggId"]=eggId},ct);
     public Task HatchEggAsync(int slot,CancellationToken ct=default)=>GameAsync("HatchEgg",new(){["slot"]=slot},ct);
     public Task ApplyPetTeamAsync(string teamId,CancellationToken ct=default)=>GameAsync("ApplyPetTeam",new(){["teamId"]=teamId},ct);
