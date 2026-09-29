@@ -46,6 +46,7 @@ public sealed class MainForm : Form
         capacity.ValueChanged+=(_,__)=>ConfigChanged();dryRun.CheckedChanged+=(_,__)=>ConfigChanged();
         LoadSettings();
         client.ProtocolWarning+=x=>Ui(()=>Append("WARN "+x));
+        client.Disconnected+=()=>Ui(OnSocketDisconnected);
         client.MessageApplied+=_=>Ui(OnState);
     }
     static TabPage ListPage(string title,CheckedListBox list,string help,params Control[] top){
@@ -64,6 +65,10 @@ public sealed class MainForm : Form
         try{await client.ConnectAsync(new SessionOptions(uri,normalized,DefaultUa,"https://"+h));runtime=new AutomationRuntime(client);runtime.Controller.Log+=Append;planner=new ProjectsPlanner(client,runtime.Confirmation);runtime.Configure(planner,Settings,()=>dryRun.Checked);automationCts=new();_=runtime.Controller.RunAsync(automationCts.Token);status.Text="SYNCING — WAITING FOR WELCOME";Append("Socket opened; SocketOpened sent; waiting for authoritative Welcome.");}
         catch(Exception e){Append("CONNECT FAILED "+e.Message);await client.DisconnectAsync();sessionActive=false;status.Text="DISCONNECTED";connect.Text="CONNECT";}
         finally{connect.Enabled=true;}
+    }
+    void OnSocketDisconnected(){
+        runtime?.Controller.ReplaceIntents([]);if(runtime is not null)runtime.Controller.AuthoritativeReady=false;
+        status.Text="DISCONNECTED — RECONNECT REQUIRED";Append("Connection lost. Automation paused; no stale state will be used.");
     }
     void OnState(){
         status.Text=client.IsAuthoritativeReady?"CONNECTED — AUTHORITATIVE STATE":"SYNCING";
