@@ -19,6 +19,7 @@ public sealed class RoomClient : IAsyncDisposable
     public bool IsAuthoritativeReady => State.Welcomed && !string.IsNullOrWhiteSpace(PlayerId);
     public event Action<JsonObject>? MessageApplied;
     public event Action<string>? ProtocolWarning;
+    public event Action? Disconnected;
 
     public RoomClient() => Actions=new GameActions(SendTextAsync,_sequencer);
 
@@ -45,13 +46,13 @@ public sealed class RoomClient : IAsyncDisposable
             {
                 using var ms=new MemoryStream();
                 WebSocketReceiveResult r;
-                do { r=await ws.ReceiveAsync(buffer,ct); if(r.MessageType==WebSocketMessageType.Close) return; ms.Write(buffer,0,r.Count); }
+                do { r=await ws.ReceiveAsync(buffer,ct); if(r.MessageType==WebSocketMessageType.Close) { State.Reset(); PlayerId=""; Disconnected?.Invoke(); return; } ms.Write(buffer,0,r.Count); }
                 while(!r.EndOfMessage);
                 await HandleIncomingAsync(Encoding.UTF8.GetString(ms.ToArray()),ct);
             }
         }
         catch(OperationCanceledException) when(ct.IsCancellationRequested) {}
-        catch(Exception e) { ProtocolWarning?.Invoke("socket receive failed: "+e.Message); }
+        catch(Exception e) { State.Reset(); PlayerId=""; ProtocolWarning?.Invoke("socket receive failed: "+e.Message); Disconnected?.Invoke(); }
     }
 
     public async Task HandleIncomingAsync(string raw,CancellationToken ct=default)
