@@ -170,6 +170,27 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
     private static bool HasSeed(JsonArray items,string species)=>items.OfType<JsonObject>().Any(x=>Str(x,"species")==species&&(Str(x,"itemType")=="Seed"||Str(x,"type")=="Seed"));
     private static JsonObject? FindInventoryEgg(JsonArray items,string egg)=>items.OfType<JsonObject>().FirstOrDefault(x=>Str(x,"eggId")==egg&&(Str(x,"itemType")=="Egg"||Str(x,"type")=="Egg"||x["eggId"] is not null));
     private static bool HasInventoryId(AuthoritativeGameState s,ProjectSettings c,string id)=>s.InventoryItems(c.PlayerId,c.DatabaseId).OfType<JsonObject>().Any(x=>Str(x,"id")==id||Str(x,"itemId")==id);
+    private static double Strength(JsonObject p)=>Num(p,"strength")??Num(p,"currentStrength")??Num(p,"str")??0;
+    private static IEnumerable<string> Abilities(JsonObject p){
+        if(p["abilities"] is JsonArray a)foreach(var x in a)if(x is JsonValue v&&v.TryGetValue<string>(out var s))yield return s;
+    }
+    private static double AbilityScore(JsonObject p,string kind){
+        var str=Strength(p);var abilities=Abilities(p).ToArray();
+        if(kind=="sell"){
+            double best=0;foreach(var a in abilities){var n=a.Replace(" ","",StringComparison.OrdinalIgnoreCase);
+                var tier=n.EndsWith("IV",StringComparison.OrdinalIgnoreCase)?4:n.EndsWith("III",StringComparison.OrdinalIgnoreCase)?3:n.EndsWith("II",StringComparison.OrdinalIgnoreCase)?2:n.Contains("SellBoost",StringComparison.OrdinalIgnoreCase)?1:0;
+                var bonus=tier switch{1=>.20,2=>.30,3=>.40,4=>.50,_=>0};best=Math.Max(best,bonus*str);
+            }return best;
+        }
+        if(kind=="mutation"){
+            double best=0;foreach(var a in abilities){var n=a.Replace(" ","",StringComparison.OrdinalIgnoreCase);
+                var tier=n.EndsWith("IV",StringComparison.OrdinalIgnoreCase)?4:n.EndsWith("III",StringComparison.OrdinalIgnoreCase)?3:n.EndsWith("II",StringComparison.OrdinalIgnoreCase)?2:n.Contains("PetMutationBoost",StringComparison.OrdinalIgnoreCase)?1:0;
+                var boost=tier switch{1=>.07,2=>.10,3=>.10,4=>.13,_=>0};best=Math.Max(best,boost*str);
+            }return best;
+        }return 0;
+    }
+    public static IReadOnlyList<(string id,double score)> RankOwnedPets(AuthoritativeGameState s,string playerId,string? db,string kind)=>
+        StateViews.OwnedPets(s,playerId,db).Select(p=>(id:Str(p,"id")??Str(p,"itemId")??"",score:AbilityScore(p,kind))).Where(x=>x.id.Length>0&&x.score>0).OrderByDescending(x=>x.score).ThenBy(x=>x.id,StringComparer.Ordinal).ToArray();
     private static bool ProtectedMutation(JsonObject crop){
         if(crop["mutations"] is JsonArray a && a.Any(x=>x?.GetValue<string>() is string m&&(m.Equals("Gold",StringComparison.OrdinalIgnoreCase)||m.Equals("Rainbow",StringComparison.OrdinalIgnoreCase))))return true;
         var m=Str(crop,"mutation");return m is not null&&(m.Equals("Gold",StringComparison.OrdinalIgnoreCase)||m.Equals("Rainbow",StringComparison.OrdinalIgnoreCase));
