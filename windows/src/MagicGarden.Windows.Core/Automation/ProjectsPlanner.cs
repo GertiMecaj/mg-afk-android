@@ -21,7 +21,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
             var crop=items.OfType<JsonObject>().FirstOrDefault(x=>Str(x,"species")==food && (Str(x,"itemType")=="Produce"||Str(x,"type")=="Produce"));
             if(crop is not null && (Str(crop,"id")??Str(crop,"itemId")) is string cropId)
                 yield return Intent("D",ProjectPriority.DEmergencyFeed,[new(ResourceKind.Pet,id),new(ResourceKind.Inventory,cropId)],
-                    ()=>Confirmed(a=>a.FeedPetAsync(id,cropId),x=>!x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>(n as JsonObject)?["id"]?.GetValue<string>()==cropId)));
+                    Confirmed(a=>a.FeedPetAsync(id,cropId),x=>!x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>(n as JsonObject)?["id"]?.GetValue<string>()==cropId)));
         }
 
         // F: weather team, otherwise Default. Temporary B/E teams restore by recalculating this at completion.
@@ -29,7 +29,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         var target=!string.IsNullOrWhiteSpace(weather)&&cfg.WeatherTeams.TryGetValue(weather!,out var wt)?wt:cfg.DefaultTeamId;
         if(!string.IsNullOrWhiteSpace(target))
             yield return Intent("F",ProjectPriority.FWeatherTeam,[new(ResourceKind.PetTeam,"active")],
-                ()=>Confirmed(a=>a.ApplyPetTeamAsync(target),_=>true));
+                Confirmed(a=>a.ApplyPetTeamAsync(target),_=>true));
 
         // B: sell only at actual full inventory; switch to sell boost first when configured.
         if(full)
@@ -47,7 +47,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         {
             var species=Str(crop,"species"); if(species is null || !cfg.HarvestSpecies.Contains(species) || !Mature(crop))continue;
             yield return Intent("B-harvest",ProjectPriority.BHarvest,[new(ResourceKind.GardenPlot,tile.ToString()),new(ResourceKind.Inventory,"capacity")],
-                ()=>Confirmed(a=>a.HarvestCropAsync(tile,grow),_=>true));
+                Confirmed(a=>a.HarvestCropAsync(tile,grow),_=>true));
         }
 
         // E: enabled eggs ignore the 13-plot reserve. Existing owned/growing egg prevents duplicate buy intent.
@@ -55,7 +55,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         {
             if(HasEgg(s,cfg,egg))continue;
             yield return Intent("E-buy",ProjectPriority.EPlantEgg,[new(ResourceKind.Shop,"egg")],
-                ()=>Confirmed(a=>a.PurchaseShopItemAsync("egg","Egg","eggId",egg),x=>HasEgg(x,cfg,egg)));
+                Confirmed(a=>a.PurchaseShopItemAsync("egg","Egg","eggId",egg),x=>HasEgg(x,cfg,egg)));
         }
 
         // A: ordinary planting preserves 13 empty plots and consumes owned seed before purchase.
@@ -69,7 +69,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
                 if(seed is null)continue;
                 foreach(var slot in usable.Take(1))
                     yield return Intent("A",ProjectPriority.APlant,[new(ResourceKind.GardenPlot,slot.ToString())],
-                        ()=>Confirmed(a=>a.PlantSeedAsync(slot,species),x=>!EmptyPlots(x,cfg).Contains(slot)));
+                        Confirmed(a=>a.PlantSeedAsync(slot,species),x=>!EmptyPlots(x,cfg).Contains(slot)));
             }
         }
 
@@ -77,7 +77,7 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         foreach(var id in cfg.ShopItems)
             if(ShopContains(s,id))
                 yield return Intent("C",ProjectPriority.CShop,[new(ResourceKind.Shop,id)],
-                    ()=>Confirmed(a=>a.PurchaseShopItemAsync("tool","Tool","toolId",id),x=>x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>n is JsonObject o && (Str(o,"id")==id || Str(o,"itemId")==id || Str(o,"toolId")==id || Str(o,"decorId")==id))));
+                    Confirmed(a=>a.PurchaseShopItemAsync("tool","Tool","toolId",id),x=>x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>n is JsonObject o && (Str(o,"id")==id || Str(o,"itemId")==id || Str(o,"toolId")==id || Str(o,"decorId")==id))));
     }
 
     private AutomationIntent Intent(string p,int pri,IReadOnlyList<ResourceKey> r,Func<Task<bool>> run)=>new(p,pri,r,_=>run());
