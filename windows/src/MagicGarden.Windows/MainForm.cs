@@ -1,5 +1,6 @@
 using MagicGarden.Windows.Core.Automation;
 using MagicGarden.Windows.Core.Protocol;
+using MagicGarden.Windows.Core.State;
 using System.Text.Json;
 
 namespace MagicGarden.Windows;
