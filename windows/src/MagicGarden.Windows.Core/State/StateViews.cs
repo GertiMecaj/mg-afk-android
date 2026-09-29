@@ -36,7 +36,7 @@ public static class StateViews
         foreach(var storage in Objects(s.Storages(playerId,db)))
             if(storage["decorId"]?.GetValue<string>()=="PetHutch"&&storage["items"] is JsonArray items)
                 foreach(var item in items.OfType<JsonObject>())if(IsPet(item))yield return item;
-        var slot=s.UserData(playerId,db);
+        var slot=s.PlayerData(playerId,db);
         if(slot?["petSlots"] is JsonArray active)foreach(var pet in active.OfType<JsonObject>())yield return pet;
     }
     private static bool IsPet(JsonObject x)=>x["itemType"]?.GetValue<string>()=="Pet"||x["petSpecies"] is not null;
