@@ -1,5 +1,6 @@
 name: Windows port
 on:
+  workflow_dispatch:
   push:
     branches: [windows-port]
     paths: ['windows/**','.github/workflows/windows-port.yml']
