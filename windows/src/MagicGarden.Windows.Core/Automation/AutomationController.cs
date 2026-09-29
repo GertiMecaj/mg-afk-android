@@ -30,12 +30,13 @@ public sealed class AutomationController
     private readonly object _gate=new();
     private List<AutomationIntent> _intents=[];
     public bool AuthoritativeReady {get;set;}
+    public long Generation {get;private set;}
     public event Action<string>? Log;
     public void Report(string message) => Log?.Invoke(message);
 
     public void ReplaceIntents(IEnumerable<AutomationIntent> intents)
     {
-        lock(_gate)_intents=intents.OrderByDescending(x=>x.Priority).ToList();
+        lock(_gate){_intents=intents.OrderByDescending(x=>x.Priority).ToList();Generation++;}
         if(_wake.CurrentCount==0)_wake.Release();
     }
 
@@ -47,10 +48,12 @@ public sealed class AutomationController
             if(!AuthoritativeReady)continue;
             while(true)
             {
-                AutomationIntent[] work; lock(_gate)work=_intents.ToArray();
+                AutomationIntent[] work; long generation; lock(_gate){work=_intents.ToArray();generation=Generation;}
                 var ran=false;
                 foreach(var i in work)
                 {
+                    if(!AuthoritativeReady)break;
+                    lock(_gate)if(generation!=Generation)break;
                     if(!_locks.TryAcquire(i.Resources,out var lease))continue;
                     using(lease)
                     {
