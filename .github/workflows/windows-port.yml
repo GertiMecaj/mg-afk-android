@@ -13,6 +13,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '8.0.x' }
       - run: dotnet test windows/tests/MagicGarden.Windows.Core.Tests/MagicGarden.Windows.Core.Tests.csproj -c Release
-      - run: dotnet publish windows/src/MagicGarden.Windows.Core/MagicGarden.Windows.Core.csproj -c Release -r win-x64 --self-contained true -o windows/artifacts/core
+      - run: dotnet publish windows/src/MagicGarden.Windows/MagicGarden.Windows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o windows/artifacts/app
       - uses: actions/upload-artifact@v4
-        with: { name: magic-garden-windows-core, path: windows/artifacts/core }
+        with: { name: magic-garden-windows-core, path: windows/artifacts/app }
