@@ -1,0 +1,11 @@
+{
+  "sourceRepository": "GertiMecaj/mg-afk-android",
+  "sourceRef": "main",
+  "protocolFiles": {
+    "RoomClient.kt": "493910b3afcd386408baadf91e605396b31411ab",
+    "GameActions.kt": "723c15290ec6c70c1bb7a5c818e0ff9a2131f2e3",
+    "CommandSequencer.kt": "912f1be68c6f9d19447b7eb5f45d3ce342339cd2",
+    "JsonPatch.kt": "d1bc5b50d1f2171516458a5442f96d3775ead9c3"
+  },
+  "rule": "Windows protocol behavior must remain parity-locked to these Android sources."
+}
