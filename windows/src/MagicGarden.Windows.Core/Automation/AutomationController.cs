@@ -31,6 +31,7 @@ public sealed class AutomationController
     private List<AutomationIntent> _intents=[];
     public bool AuthoritativeReady {get;set;}
     public event Action<string>? Log;
+    public void Report(string message) => Log?.Invoke(message);
 
     public void ReplaceIntents(IEnumerable<AutomationIntent> intents)
     {
