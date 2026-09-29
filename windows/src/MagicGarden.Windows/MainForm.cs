@@ -1,5 +1,6 @@
 using MagicGarden.Windows.Core.Automation;
 using MagicGarden.Windows.Core.Protocol;
+using System.Text.Json;
 
 namespace MagicGarden.Windows;
 
@@ -40,6 +41,10 @@ public sealed class MainForm : Form
         tabs.TabPages.Add(TextPage("F — Pet Teams",weatherTeams,"weather=teamId",defaultTeam));
         var d=new TabPage("Diagnostics");d.Controls.Add(diag);d.Controls.Add(dryRun);tabs.TabPages.Add(d);
         connect.Click+=async(_,__)=>await Toggle();
+        foreach(var b in new[]{plant,harvest,shop,eggs}) b.ItemCheck+=(_,__)=>BeginInvoke(()=>ConfigChanged());
+        foreach(var t in new[]{feedMap,defaultTeam,sellTeam,hatchTeam,weatherTeams}) t.TextChanged+=(_,__)=>ConfigChanged();
+        capacity.ValueChanged+=(_,__)=>ConfigChanged();dryRun.CheckedChanged+=(_,__)=>ConfigChanged();
+        LoadSettings();
         client.ProtocolWarning+=x=>Ui(()=>Append("WARN "+x));
         client.MessageApplied+=_=>Ui(OnState);
     }
@@ -70,7 +75,12 @@ public sealed class MainForm : Form
             diag.Text=$"Connection: {status.Text}\r\nPlayer: {client.PlayerId}\r\nState revision: {client.State.Revision}\r\nWeather: {client.State.Weather()}\r\nInventory: {client.State.InventoryItems(client.PlayerId).Count}/{capacity.Value}\r\nQueued decisions: {intents.Length}\r\nDry run: {dryRun.Checked}";
         }
     }
-    AutomationIntent Simulate(AutomationIntent i)=>new(i.Project,i.Priority,i.Resources,_=>{Append($"SIMULATE {i.Project}: {string.Join(", ",i.Resources.Select(x=>$"{x.Kind}:{x.Id}"))}");return Task.FromResult(false);});
+    void ConfigChanged(){runtime?.Replan();SaveSettings();}
+    sealed record UiSettings(string Host,string Version,string Room,string[] Plant,string[] Harvest,string[] Shop,string[] Eggs,string Feed,string DefaultTeam,string? SellTeam,string? HatchTeam,string Weather,int Capacity,bool DryRun);
+    string SettingsPath=>Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"MagicGarden","settings.json");
+    void SaveSettings(){try{Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);var x=new UiSettings(host.Text,version.Text,room.Text,Checked(plant).ToArray(),Checked(harvest).ToArray(),Checked(shop).ToArray(),Checked(eggs).ToArray(),feedMap.Text,defaultTeam.Text,Null(sellTeam.Text),Null(hatchTeam.Text),weatherTeams.Text,(int)capacity.Value,dryRun.Checked);File.WriteAllText(SettingsPath,JsonSerializer.Serialize(x));}catch{}}
+    void LoadSettings(){try{if(!File.Exists(SettingsPath))return;var x=JsonSerializer.Deserialize<UiSettings>(File.ReadAllText(SettingsPath));if(x is null)return;host.Text=x.Host;version.Text=x.Version;room.Text=x.Room;feedMap.Text=x.Feed;defaultTeam.Text=x.DefaultTeam;sellTeam.Text=x.SellTeam??"";hatchTeam.Text=x.HatchTeam??"";weatherTeams.Text=x.Weather;capacity.Value=Math.Clamp(x.Capacity,(int)capacity.Minimum,(int)capacity.Maximum);dryRun.Checked=x.DryRun;RestoreChecks(plant,x.Plant);RestoreChecks(harvest,x.Harvest);RestoreChecks(shop,x.Shop);RestoreChecks(eggs,x.Eggs);}catch{}}
+    static void RestoreChecks(CheckedListBox b,IEnumerable<string> values){foreach(var v in values){var i=b.Items.IndexOf(v);if(i<0)i=b.Items.Add(v);b.SetItemChecked(i,true);}}
     ProjectSettings Settings()=>new(client.PlayerId,null,Checked(plant),Checked(harvest),Checked(shop),Checked(eggs),Pairs(feedMap.Text),Pairs(weatherTeams.Text),defaultTeam.Text.Trim(),Null(sellTeam.Text),Null(hatchTeam.Text),(int)capacity.Value);
     static IReadOnlySet<string> Checked(CheckedListBox b)=>b.CheckedItems.Cast<object>().Select(x=>x.ToString()!).ToHashSet(StringComparer.Ordinal);
     static IReadOnlyDictionary<string,string> Pairs(string text)=>text.Split('\n',StringSplitOptions.RemoveEmptyEntries).Select(x=>x.Trim()).Where(x=>x.Contains('=')).Select(x=>x.Split('=',2)).Where(x=>x.Length==2).ToDictionary(x=>x[0].Trim(),x=>x[1].Trim(),StringComparer.Ordinal);
@@ -89,5 +99,5 @@ public sealed class MainForm : Form
     static string Pair(string k,string v)=>Uri.EscapeDataString(k)+"="+Uri.EscapeDataString(v);
     void Append(string s){if(InvokeRequired){BeginInvoke(()=>Append(s));return;}log.AppendText($"[{DateTime.Now:T}] {s}{Environment.NewLine}");}
     void Ui(Action a){if(InvokeRequired)BeginInvoke(a);else a();}
-    protected override async void OnFormClosed(FormClosedEventArgs e){automationCts?.Cancel();await client.DisposeAsync();base.OnFormClosed(e);}
+    protected override async void OnFormClosed(FormClosedEventArgs e){SaveSettings();automationCts?.Cancel();await client.DisposeAsync();base.OnFormClosed(e);}
 }
