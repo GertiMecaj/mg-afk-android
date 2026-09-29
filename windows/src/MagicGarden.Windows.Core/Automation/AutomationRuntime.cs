@@ -12,7 +12,7 @@ public sealed class AutomationRuntime
     {
         _client=client; Confirmation=new(client.State);
         client.MessageApplied += _ => OnAuthoritativeStateChanged();
-        client.ProtocolWarning += x => Controller.Log?.Invoke(x);
+        client.ProtocolWarning += Controller.Report;
     }
     private void OnAuthoritativeStateChanged()
     {
