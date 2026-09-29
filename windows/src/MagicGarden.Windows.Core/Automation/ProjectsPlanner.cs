@@ -65,7 +65,9 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
             yield return Intent("B-sell",ProjectPriority.BFullInventorySell,[new(ResourceKind.Sell,"all"),new(ResourceKind.PetTeam,"active")],
                 async ()=>{
                     if(!IsFull(cfg))return false;
+                    if(!IsFull(cfg))return false;
                     var sellTeam=await EnsureOptimizerTeam(cfg,"sell","MG-AUTO-SELL");
+                    if(!IsFull(cfg)){await RestoreTeam(cfg);return false;}
                     if(!string.IsNullOrWhiteSpace(sellTeam) && !TeamIsActive(client.State,cfg,sellTeam!) && !await Confirmed(a=>a.ApplyPetTeamAsync(sellTeam!),x=>TeamIsActive(x,cfg,sellTeam!))())return false;
                     if(!IsFull(cfg)) { await RestoreTeam(cfg); return false; }
                     var sold=await Confirmed(a=>a.SellAllCropsAsync(),x=>x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Count<cfg.InventoryCapacity)();
@@ -89,7 +91,10 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
                 if(EggReady(pe.node))
                     yield return Intent("E-hatch",ProjectPriority.EHatchReady,[new(ResourceKind.GardenPlot,pe.slot.ToString()),new(ResourceKind.PetTeam,"active")],
                         async()=>{
+                            if(FindPlantedEgg(client.State,cfg,egg) is null||!EggReady(FindPlantedEgg(client.State,cfg,egg)!.Value.node))return false;
                             var hatchTeam=await EnsureOptimizerTeam(cfg,"mutation","MG-AUTO-HATCH");
+                            var currentEgg=FindPlantedEgg(client.State,cfg,egg);
+                            if(currentEgg is null||!EggReady(currentEgg.Value.node)){await RestoreTeam(cfg);return false;}
                             if(!string.IsNullOrWhiteSpace(hatchTeam) && !TeamIsActive(client.State,cfg,hatchTeam!) && !await Confirmed(a=>a.ApplyPetTeamAsync(hatchTeam!),x=>TeamIsActive(x,cfg,hatchTeam!))()) return false;
                             var ok=await Confirmed(a=>a.HatchEggAsync(pe.slot),x=>FindPlantedEgg(x,cfg,egg) is null)();
                             await RestoreTeam(cfg); return ok;
