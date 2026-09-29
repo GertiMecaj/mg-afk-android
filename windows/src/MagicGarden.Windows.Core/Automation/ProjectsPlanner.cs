@@ -74,9 +74,9 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         // B: harvest configured mature crops; multi-grow-slot index is preserved.
         foreach(var (tile,grow,crop) in StateViews.Crops(s,cfg.PlayerId,cfg.DatabaseId))
         {
-            var species=Str(crop,"species"); if(species is null || !cfg.HarvestSpecies.Contains(species) || !Mature(crop))continue;
+            var species=Str(crop,"species"); if(species is null || !cfg.HarvestSpecies.Contains(species) || !Mature(crop) || ProtectedMutation(crop))continue;
             yield return Intent("B-harvest",ProjectPriority.BHarvest,[new(ResourceKind.GardenPlot,tile.ToString()),new(ResourceKind.Inventory,"capacity")],
-                Confirmed(a=>a.HarvestCropAsync(tile,grow),_=>true));
+                Confirmed(a=>a.HarvestCropAsync(tile,grow),x=>!CropExists(x,cfg,tile,grow,species)));
         }
 
         // E: full egg lifecycle. Ignores the 13-empty-plot reserve.
@@ -170,7 +170,11 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
     private static bool HasSeed(JsonArray items,string species)=>items.OfType<JsonObject>().Any(x=>Str(x,"species")==species&&(Str(x,"itemType")=="Seed"||Str(x,"type")=="Seed"));
     private static JsonObject? FindInventoryEgg(JsonArray items,string egg)=>items.OfType<JsonObject>().FirstOrDefault(x=>Str(x,"eggId")==egg&&(Str(x,"itemType")=="Egg"||Str(x,"type")=="Egg"||x["eggId"] is not null));
     private static bool HasInventoryId(AuthoritativeGameState s,ProjectSettings c,string id)=>s.InventoryItems(c.PlayerId,c.DatabaseId).OfType<JsonObject>().Any(x=>Str(x,"id")==id||Str(x,"itemId")==id);
-    private static int MutationPenalty(JsonObject x){var t=x.ToJsonString();return t.Contains("Gold",StringComparison.OrdinalIgnoreCase)||t.Contains("Rainbow",StringComparison.OrdinalIgnoreCase)?1:0;}
+    private static bool ProtectedMutation(JsonObject crop){
+        if(crop["mutations"] is JsonArray a && a.Any(x=>x?.GetValue<string>() is string m&&(m.Equals("Gold",StringComparison.OrdinalIgnoreCase)||m.Equals("Rainbow",StringComparison.OrdinalIgnoreCase))))return true;
+        var m=Str(crop,"mutation");return m is not null&&(m.Equals("Gold",StringComparison.OrdinalIgnoreCase)||m.Equals("Rainbow",StringComparison.OrdinalIgnoreCase));
+    }
+        private static int MutationPenalty(JsonObject x){var t=x.ToJsonString();return t.Contains("Gold",StringComparison.OrdinalIgnoreCase)||t.Contains("Rainbow",StringComparison.OrdinalIgnoreCase)?1:0;}
     private static bool NeedsWater(JsonObject c)=>c["isWatered"]?.GetValue<bool>()==false||c["watered"]?.GetValue<bool>()==false||c["needsWater"]?.GetValue<bool>()==true;
     private static bool NeedsWaterAt(AuthoritativeGameState s,ProjectSettings c,int tile,int grow)=>StateViews.Crops(s,c.PlayerId,c.DatabaseId).Any(x=>x.tileObjectIdx==tile&&x.growSlotIdx==grow&&NeedsWater(x.crop));
     private static bool CropExists(AuthoritativeGameState s,ProjectSettings c,int tile,int grow,string species)=>StateViews.Crops(s,c.PlayerId,c.DatabaseId).Any(x=>x.tileObjectIdx==tile&&x.growSlotIdx==grow&&Str(x.crop,"species")==species);
