@@ -128,11 +128,19 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
             }
         }
 
-        // C: only emits purchase work for enabled ids that the authoritative shop snapshot exposes.
+        // C: authoritative shop typing + purchase confirmation + appropriate storage routing.
         foreach(var id in cfg.ShopItems)
-            if(ShopContains(s,id))
-                yield return Intent("C",ProjectPriority.CShop,[new(ResourceKind.Shop,id)],
-                    Confirmed(a=>a.PurchaseShopItemAsync("tool","Tool","toolId",id),x=>x.InventoryItems(cfg.PlayerId,cfg.DatabaseId).Any(n=>n is JsonObject o && (Str(o,"id")==id || Str(o,"itemId")==id || Str(o,"toolId")==id || Str(o,"decorId")==id))));
+            if(TryShopItem(s,id,out var cShop,out var cType,out var cField))
+                yield return Intent("C",ProjectPriority.CShop,[new(ResourceKind.Shop,cShop),new(ResourceKind.Inventory,id)],
+                    async()=>{
+                        var beforeIds=MatchingInventoryIds(client.State,cfg,id,cField).ToHashSet();
+                        if(!await Confirmed(a=>a.PurchaseShopItemAsync(cShop,cType,cField,id),x=>MatchingInventoryIds(x,cfg,id,cField).Any(z=>!beforeIds.Contains(z)))())return false;
+                        var bought=MatchingInventoryItems(client.State,cfg,id,cField).FirstOrDefault(x=>!beforeIds.Contains(Str(x,"id")??Str(x,"itemId")??""));
+                        var itemId=Str(bought,"id")??Str(bought,"itemId");var storage=StorageFor(cType);
+                        if(itemId is null||storage is null)return true;
+                        var storageId=FindStorageId(client.State,cfg,storage);if(storageId is null)return true;
+                        return await Confirmed(a=>a.PutItemInStorageAsync(itemId,storageId),x=>!HasInventoryId(x,cfg,itemId))();
+                    });
     }
 
     private AutomationIntent Intent(string p,int pri,IReadOnlyList<ResourceKey> r,Func<Task<bool>> run)=>new(p,pri,r,_=>run());
@@ -153,6 +161,12 @@ public sealed class ProjectsPlanner(RoomClient client, StateConfirmation confirm
         if(n is JsonObject o){foreach(var kv in o)if(int.TryParse(kv.Key,out var i)&&kv.Value is null)r.Add(i);return r;}
         if(n is JsonArray a){for(int i=0;i<a.Count;i++)if(a[i] is null)r.Add(i);}return r;}
     private static bool ShopContains(AuthoritativeGameState s,string id)=>s.Shops().ToJsonString().Contains(id,StringComparison.Ordinal);
+    private static IEnumerable<JsonObject> MatchingInventoryItems(AuthoritativeGameState s,ProjectSettings c,string id,string field)=>s.InventoryItems(c.PlayerId,c.DatabaseId).OfType<JsonObject>().Where(x=>Str(x,field)==id||Str(x,"species")==id||Str(x,"toolId")==id||Str(x,"eggId")==id||Str(x,"decorId")==id);
+    private static IEnumerable<string> MatchingInventoryIds(AuthoritativeGameState s,ProjectSettings c,string id,string field)=>MatchingInventoryItems(s,c,id,field).Select(x=>Str(x,"id")??Str(x,"itemId")).Where(x=>x is not null)!;
+    private static string? StorageFor(string type)=>type switch{"Seed"=>"SeedSilo","Tool"=>"ToolShack","Decor"=>"DecorShed","Pet"=>"PetHutch",_=>null};
+    private static string? FindStorageId(AuthoritativeGameState s,ProjectSettings c,string decorId){
+        foreach(var st in s.Storages(c.PlayerId,c.DatabaseId).OfType<JsonObject>())if(Str(st,"decorId")==decorId)return Str(st,"id")??Str(st,"storageId")??decorId;return null;
+    }
     private static bool HasSeed(JsonArray items,string species)=>items.OfType<JsonObject>().Any(x=>Str(x,"species")==species&&(Str(x,"itemType")=="Seed"||Str(x,"type")=="Seed"));
     private static JsonObject? FindInventoryEgg(JsonArray items,string egg)=>items.OfType<JsonObject>().FirstOrDefault(x=>Str(x,"eggId")==egg&&(Str(x,"itemType")=="Egg"||Str(x,"type")=="Egg"||x["eggId"] is not null));
     private static bool HasInventoryId(AuthoritativeGameState s,ProjectSettings c,string id)=>s.InventoryItems(c.PlayerId,c.DatabaseId).OfType<JsonObject>().Any(x=>Str(x,"id")==id||Str(x,"itemId")==id);
