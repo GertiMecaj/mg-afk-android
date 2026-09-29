@@ -56,7 +56,7 @@ public sealed class MainForm : Form
         var uri=BuildSocketUri(h,v,roomId,Guid.NewGuid().ToString(),1,"navigate");
         var normalized=rawCookie.Contains("mc_jwt",StringComparison.OrdinalIgnoreCase)?rawCookie:"mc_jwt="+rawCookie;
         status.Text="CONNECTING";connect.Text="DISCONNECT";connect.Enabled=false;sessionActive=true;
-        try{await client.ConnectAsync(new SessionOptions(uri,normalized,DefaultUa,"https://"+h));runtime=new AutomationRuntime(client);runtime.Controller.Log+=Append;planner=new ProjectsPlanner(client,runtime.Confirmation);automationCts=new();_=runtime.Controller.RunAsync(automationCts.Token);status.Text="SYNCING — WAITING FOR WELCOME";Append("Socket opened; SocketOpened sent; waiting for authoritative Welcome.");}
+        try{await client.ConnectAsync(new SessionOptions(uri,normalized,DefaultUa,"https://"+h));runtime=new AutomationRuntime(client);runtime.Controller.Log+=Append;planner=new ProjectsPlanner(client,runtime.Confirmation);runtime.Configure(planner,Settings,()=>dryRun.Checked);automationCts=new();_=runtime.Controller.RunAsync(automationCts.Token);status.Text="SYNCING — WAITING FOR WELCOME";Append("Socket opened; SocketOpened sent; waiting for authoritative Welcome.");}
         catch(Exception e){Append("CONNECT FAILED "+e.Message);await client.DisconnectAsync();sessionActive=false;status.Text="DISCONNECTED";connect.Text="CONNECT";}
         finally{connect.Enabled=true;}
     }
@@ -66,7 +66,7 @@ public sealed class MainForm : Form
         if(runtime is not null&&planner is not null){
             var cfg=Settings();
             var intents=planner.Build(cfg).ToArray();
-            runtime.Controller.ReplaceIntents(dryRun.Checked?intents.Select(Simulate):intents);
+            runtime.Replan();
             diag.Text=$"Connection: {status.Text}\r\nPlayer: {client.PlayerId}\r\nState revision: {client.State.Revision}\r\nWeather: {client.State.Weather()}\r\nInventory: {client.State.InventoryItems(client.PlayerId).Count}/{capacity.Value}\r\nQueued decisions: {intents.Length}\r\nDry run: {dryRun.Checked}";
         }
     }
